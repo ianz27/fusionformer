@@ -14,6 +14,9 @@ from .structures import (BaseInstance3DBoxes, Box3DMode, CameraInstance3DBoxes,
                          LiDARInstance3DBoxes, get_box_type, limit_period,
                          mono_cam_box2vis, points_cam2img, xywhr2xyxyr)
 from .transforms import bbox3d2result, bbox3d2roi, bbox3d_mapping_back
+from .assigners import HungarianAssigner3D
+from .coders import NMSFreeCoder
+from .match_costs import build_match_cost, BBox3DL1Cost, DiceCost
 
 __all__ = [
     'BaseSampler', 'AssignResult', 'BaseAssigner', 'MaxIoUAssigner',
@@ -25,5 +28,8 @@ __all__ = [
     'LiDARInstance3DBoxes', 'CameraInstance3DBoxes', 'bbox3d2roi',
     'bbox3d2result', 'DepthInstance3DBoxes', 'BaseInstance3DBoxes',
     'bbox3d_mapping_back', 'xywhr2xyxyr', 'limit_period', 'points_cam2img',
-    'get_box_type', 'Coord3DMode', 'mono_cam_box2vis'
+    'get_box_type', 'Coord3DMode', 'mono_cam_box2vis',
+    'HungarianAssigner3D',
+    'NMSFreeCoder',
+    'build_match_cost', 'BBox3DL1Cost', 'DiceCost'
 ]

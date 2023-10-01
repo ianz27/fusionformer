@@ -16,6 +16,7 @@ from .necks import *  # noqa: F401,F403
 from .roi_heads import *  # noqa: F401,F403
 from .segmentors import *  # noqa: F401,F403
 from .voxel_encoders import *  # noqa: F401,F403
+from .modules import *
 
 __all__ = [
     'VOXEL_ENCODERS', 'MIDDLE_ENCODERS', 'FUSION_LAYERS', 'build_backbone',
