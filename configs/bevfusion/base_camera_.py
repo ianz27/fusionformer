@@ -26,35 +26,47 @@ transformer_num_layers = 3
 voxel_size = [0.1, 0.1, 0.2]
 model = dict(
     type='FusionFormer',
-    pts_voxel_layer=dict(
-        point_cloud_range=point_cloud_range,
-        max_num_points=10, voxel_size=voxel_size, max_voxels=(90000, 120000)),
-    pts_voxel_encoder=dict(type='HardSimpleVFE', num_features=5),
-    pts_middle_encoder=dict(
-        type='SparseEncoder',
-        in_channels=5,
-        sparse_shape=[41, 1024, 1024],
-        output_channels=128,
-        order=('conv', 'norm', 'act'),
-        encoder_channels=((16, 16, 32), (32, 32, 64), (64, 64, 128), (128, 128)),
-        encoder_paddings=((0, 0, 1), (0, 0, 1), (0, 0, [0, 1, 1]), (0, 0)),
-        block_type='basicblock'),
-    pts_backbone=dict(
-        type='SECOND',
-        in_channels=256,
-        out_channels=[128, 256],
-        layer_nums=[5, 5],
-        layer_strides=[1, 2],
-        norm_cfg=dict(type='BN', eps=1e-3, momentum=0.01),
-        conv_cfg=dict(type='Conv2d', bias=False)),
-    pts_neck=dict(
-        type='SECONDFPN',
-        in_channels=[128, 256],
-        out_channels=[256, 256],
-        upsample_strides=[1, 2],
-        norm_cfg=dict(type='BN', eps=1e-3, momentum=0.01),
-        upsample_cfg=dict(type='deconv', bias=False),
-        use_conv_for_no_stride=True),
+    # camera
+    img_backbone=dict(
+        type="ResNet",
+        depth=50,
+        num_stages=4,
+        out_indices=(1, 2, 3),
+        frozen_stages=4,
+        norm_cfg=dict(type="BN2d", requires_grad=False),
+        norm_eval=True,
+        style="caffe",
+        dcn=dict(
+            type="DCNv2", deform_groups=1, fallback_on_stride=False
+        ),  # original DCNv2 will print log when perform load_state_dict
+        stage_with_dcn=(False, False, False, False),
+    ),
+    img_neck=dict(
+        type="FPN",
+        in_channels=[512, 1024, 2048],
+        out_channels=_dim_,
+        start_level=0,
+        add_extra_convs="on_output",
+        num_outs=4,
+        relu_before_extra_convs=True,
+    ),
+    # view transformer, TODO: add to registry
+    vtransform_feat_level=2,
+    vtransform=dict(
+        # type='LSSTransform',
+        in_channels=_dim_,
+        out_channels=_dim_,
+        image_size=[928, 1600],  # [928, 1600]
+        feature_size=[29, 50],  # [116, 200], [58, 100], [29, 50], [15, 25]
+        # xbound=[-51.2, 51.2, 0.8],
+        # ybound=[-51.2, 51.2, 0.8],
+        xbound=[-50.0, 50.0, 0.5],
+        ybound=[-50.0, 50.0, 0.5],
+        zbound=[-10.0, 10.0, 20.0],
+        dbound=[1.0, 60.0, 1.0],),
+    fusion_layer=dict(
+        # type='ConvFuser',  # TODO: add to registry
+        in_channels=[512, 256], out_channels=256),  # hard coding
     pts_bbox_head=dict(
         type='FusionFormerHead',
         bev_h=bev_h_,

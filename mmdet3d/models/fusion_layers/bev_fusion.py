@@ -1,5 +1,6 @@
 import torch
 from torch import nn as nn
+import torch.nn.functional as F
 
 from ..builder import FUSION_LAYERS
 
@@ -24,6 +25,10 @@ class BEVFusion(nn.Module):
                     )
 
     def forward(self, pts_feats=None, img_feats=None):
-        for pts_feat in pts_feats:
-            
+        pts_feat = pts_feats[0]
+        pts_feat = F.interpolate(pts_feat, size=(self.out_h, self.out_w), mode='bilinear')
+        pts_feat = self.bev_conv(pts_feat)
+
+        return pts_feat
+
 

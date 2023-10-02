@@ -9,6 +9,7 @@ from mmdet.core import (multi_apply, multi_apply, reduce_mean)
 from mmdet.models.utils.transformer import inverse_sigmoid
 from mmdet.models import HEADS
 from mmdet.models.dense_heads import DETRHead
+from mmdet3d.models import builder
 from mmdet3d.core.bbox.coders import build_bbox_coder
 from mmdet3d.core.bbox.util import normalize_bbox
 from mmcv.runner import force_fp32, auto_fp16
@@ -31,6 +32,7 @@ class FusionFormerHead(DETRHead):
                  *args,
                  with_box_refine=False,
                  as_two_stage=False,
+                 fusion_layer=None,
                  transformer=None,
                  bbox_coder=None,
                  num_cls_fcs=2,
@@ -66,6 +68,9 @@ class FusionFormerHead(DETRHead):
             *args, transformer=transformer, **kwargs)
         self.code_weights = nn.Parameter(torch.tensor(
             self.code_weights, requires_grad=False), requires_grad=False)
+        
+        if fusion_layer is not None:
+            self.fusion_layer = builder.build_fusion_layer(fusion_layer)
 
     def _init_layers(self):
         """Initialize classification branch and regression branch of head."""
@@ -119,11 +124,8 @@ class FusionFormerHead(DETRHead):
     def forward(self, pts_feats, img_feats, img_metas):
         """Forward function.
         Args:
-            mlvl_feats (tuple[Tensor]): Features from the upstream
-                network, each is a 5D-tensor with shape
-                (B, N, C, H, W).
-            prev_bev: previous bev featues
-            only_bev: only compute BEV features with encoder. 
+            pts_feats (list[Tensor]): 1 len list, with shape (B, C, H, W)
+
         Returns:
             all_cls_scores (Tensor): Outputs from the classification head, \
                 shape [nb_dec, bs, num_query, cls_out_channels]. Note \
@@ -132,20 +134,18 @@ class FusionFormerHead(DETRHead):
                 head with normalized coordinate format (cx, cy, w, l, cz, h, theta, vx, vy). \
                 Shape [nb_dec, bs, num_query, 9].
         """
-        bs = len(pts_feats)
+
+        # ## debug
+        # print('fusionformer_head: ')
+        # print('pts_feats: ', len(pts_feats), pts_feats[0].shape)  # pts_feats:  1 torch.Size([4, 512, 128, 128])
+
         dtype = pts_feats[0].dtype
         object_query_embeds = self.query_embedding.weight.to(dtype)
-        bev_queries = self.bev_embedding.weight.to(dtype)
-
-        bev_mask = torch.zeros((bs, self.bev_h, self.bev_w), device=bev_queries.device).to(dtype)
-        bev_pos = self.positional_encoding(bev_mask).to(dtype)
 
         # to bev_embed
-        pts_feat = pts_feats[0]
-        B, C, H, W = pts_feat.shape
-        pts_feat = F.interpolate(pts_feat, size=(self.bev_h, self.bev_w), mode='bilinear')
-        B, C, H, W = pts_feat.shape
-        bev_embed = pts_feat.permute(2, 3, 0, 1).contiguous().view(H * W, B, C)[:, :, 0:256]
+        bev_embed = self.fusion_layer(pts_feats)
+        B, C, H, W = bev_embed.shape
+        bev_embed = bev_embed.permute(2, 3, 0, 1).contiguous().view(H * W, B, C)
 
         outputs = self.transformer.get_states_and_refs(
             bev_embed,
