@@ -9,7 +9,6 @@ from mmdet.core import (multi_apply, multi_apply, reduce_mean)
 from mmdet.models.utils.transformer import inverse_sigmoid
 from mmdet.models import HEADS
 from mmdet.models.dense_heads import DETRHead
-from mmdet3d.models import builder
 from mmdet3d.core.bbox.coders import build_bbox_coder
 from mmdet3d.core.bbox.util import normalize_bbox
 from mmcv.runner import force_fp32, auto_fp16
@@ -68,9 +67,6 @@ class FusionFormerHead(DETRHead):
             *args, transformer=transformer, **kwargs)
         self.code_weights = nn.Parameter(torch.tensor(
             self.code_weights, requires_grad=False), requires_grad=False)
-        
-        if fusion_layer is not None:
-            self.fusion_layer = builder.build_fusion_layer(fusion_layer)
 
     def _init_layers(self):
         """Initialize classification branch and regression branch of head."""
@@ -120,8 +116,8 @@ class FusionFormerHead(DETRHead):
             for m in self.cls_branches:
                 nn.init.constant_(m[-1].bias, bias_init)
 
-    @auto_fp16(apply_to=('pts_feats', 'img_feats'))
-    def forward(self, pts_feats, img_feats, img_metas):
+    @auto_fp16(apply_to=('bev_embed'))
+    def forward(self, bev_embed, img_metas):
         """Forward function.
         Args:
             pts_feats (list[Tensor]): 1 len list, with shape (B, C, H, W)
@@ -139,11 +135,9 @@ class FusionFormerHead(DETRHead):
         # print('fusionformer_head: ')
         # print('pts_feats: ', len(pts_feats), pts_feats[0].shape)  # pts_feats:  1 torch.Size([4, 512, 128, 128])
 
-        dtype = pts_feats[0].dtype
+        dtype = bev_embed.dtype
         object_query_embeds = self.query_embedding.weight.to(dtype)
 
-        # to bev_embed
-        bev_embed = self.fusion_layer(pts_feats)
         B, C, H, W = bev_embed.shape
         bev_embed = bev_embed.permute(2, 3, 0, 1).contiguous().view(H * W, B, C)
 

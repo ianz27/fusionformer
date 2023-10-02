@@ -1,8 +1,4 @@
-# _base_ = [
-#     '../_base_/datasets/nus-3d.py',
-#     '../_base_/models/centerpoint_01voxel_second_secfpn_nus.py',
-#     '../_base_/schedules/cyclic_20e.py', '../_base_/default_runtime_without_tensorboard.py'
-# ]
+# 
 
 find_unused_parameters = True
 
@@ -55,6 +51,12 @@ model = dict(
         norm_cfg=dict(type='BN', eps=1e-3, momentum=0.01),
         upsample_cfg=dict(type='deconv', bias=False),
         use_conv_for_no_stride=True),
+    fusion_layer=dict(
+        type='BEVFusion',
+        in_channels=512,  # cat two 256 pts_feat
+        out_channels=_dim_,
+        out_h=bev_h_,
+        out_w=bev_w_,),
     pts_bbox_head=dict(
         type='FusionFormerHead',
         bev_h=bev_h_,
@@ -65,12 +67,6 @@ model = dict(
         sync_cls_avg_factor=True,
         with_box_refine=True,
         as_two_stage=False,
-        fusion_layer=dict(
-            type='BEVFusion',
-            in_channels=512,  # cat two 256 pts_feat
-            out_channels=_dim_,
-            out_h=bev_h_,
-            out_w=bev_w_,),
         transformer=dict(
             type='PerceptionTransformer',
             rotate_prev_bev=True,
