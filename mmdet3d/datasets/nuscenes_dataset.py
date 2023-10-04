@@ -220,25 +220,44 @@ class NuScenesDataset(Custom3DDataset):
         if self.modality['use_camera']:
             image_paths = []
             lidar2img_rts = []
+            lidar2camera_list = []
+            camera_intrinsics_list = []
+            camera2lidar_list = []
             for cam_type, cam_info in info['cams'].items():
                 image_paths.append(cam_info['data_path'])
                 # obtain lidar to image transformation matrix
                 lidar2cam_r = np.linalg.inv(cam_info['sensor2lidar_rotation'])
-                lidar2cam_t = cam_info[
-                    'sensor2lidar_translation'] @ lidar2cam_r.T
+                lidar2cam_t = cam_info['sensor2lidar_translation'] @ lidar2cam_r.T
                 lidar2cam_rt = np.eye(4)
                 lidar2cam_rt[:3, :3] = lidar2cam_r.T
                 lidar2cam_rt[3, :3] = -lidar2cam_t
+                # lidar to camera
+                lidar2camera_list.append(lidar2cam_rt.T)
+
                 intrinsic = cam_info['cam_intrinsic']
                 viewpad = np.eye(4)
                 viewpad[:intrinsic.shape[0], :intrinsic.shape[1]] = intrinsic
                 lidar2img_rt = (viewpad @ lidar2cam_rt.T)
                 lidar2img_rts.append(lidar2img_rt)
+				
+				# camera intrinsics
+                camera_intrinsics = np.eye(4).astype(np.float32)
+                camera_intrinsics[:3, :3] = cam_info["cam_intrinsic"]
+                camera_intrinsics_list.append(camera_intrinsics)
+				
+				# camera to lidar transform
+                camera2lidar = np.eye(4).astype(np.float32)
+                camera2lidar[:3, :3] = cam_info["sensor2lidar_rotation"]
+                camera2lidar[:3, 3] = cam_info["sensor2lidar_translation"]
+                camera2lidar_list.append(camera2lidar)
 
             input_dict.update(
                 dict(
                     img_filename=image_paths,
                     lidar2img=lidar2img_rts,
+					lidar2cam=lidar2camera_list,
+					cam_intrinsic=camera_intrinsics_list,
+					cam2lidar=camera2lidar_list,
                 ))
 
         if not self.test_mode:

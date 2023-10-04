@@ -5,6 +5,7 @@
 # ---------------------------------------------
 
 import torch
+import torch.nn.functional as F
 from mmcv.runner import force_fp32, auto_fp16
 from mmdet.models import DETECTORS
 from mmdet3d.models import builder
@@ -57,9 +58,9 @@ class FusionFormer(MVXTwoStageDetector):
         voxel_features = self.pts_voxel_encoder(voxels, num_points, coors)
         batch_size = coors[-1, 0] + 1
         x = self.pts_middle_encoder(voxel_features, coors, batch_size)
-        x = self.pts_backbone(x)
-        if self.with_pts_neck:
-            x = self.pts_neck(x)
+        # x = self.pts_backbone(x)
+        # if self.with_pts_neck:
+        #     x = self.pts_neck(x)
         return x
 
     def forward_train(self,
@@ -97,38 +98,62 @@ class FusionFormer(MVXTwoStageDetector):
         Returns:
             dict: Losses of different branches.
         """
-        # feature extract
-        img_feats, pts_feats = self.extract_feat(points, img=img, img_metas=img_metas)
+        # feature extract, ## debug
+        # img_feats, pts_feats = self.extract_feat(points, img=img, img_metas=img_metas)
+        # print('img: ', img.shape)  # img:  torch.Size([2, 6, 3, 900, 1600])
+        img_feats = self.extract_img_feat(img, img_metas)
+        pts_feats = None 
         
         # fusion
-        bev_embed = self.fusion_layer(pts_feats)
+        ## debug
+        x = self.fusion_layer(pts_feats, img_feats, img_metas)
 
-        # losses = dict()
-        if pts_feats:
-            outs = self.pts_bbox_head(bev_embed, img_metas=img_metas)
+        x = self.pts_backbone(x)
+        x = self.pts_neck(x)
+        # y = x[0] + x[1]
+        bev_embed = F.interpolate(x[0], size=(200, 200), mode='bilinear')[:, 0: 256, :, :]
+        # x = self.bev_conv(x)
 
-            loss_inputs = [gt_bboxes_3d, gt_labels_3d, outs]
-            losses = self.pts_bbox_head.loss(*loss_inputs)
+        # head
+        outs = self.pts_bbox_head(bev_embed, img_metas=img_metas)
+
+        # loss
+        loss_inputs = [gt_bboxes_3d, gt_labels_3d, outs]
+        losses = self.pts_bbox_head.loss(*loss_inputs)
 
         return losses
-    
+        
     def simple_test(self, points, img_metas, img=None, rescale=False):
         """Test function without augmentaiton."""
-        img_feats, pts_feats = self.extract_feat(points, img=img, img_metas=img_metas)
+        # feature extract, ## debug
+        # img_feats, pts_feats = self.extract_feat(points, img=img, img_metas=img_metas)
+        img_feats = self.extract_img_feat(img, img_metas)
+        pts_feats = None 
+        
+        # fusion
+        ## debug
+        x = self.fusion_layer(pts_feats, img_feats, img_metas)
 
-        bev_embed = self.fusion_layer(pts_feats)
+        x = self.pts_backbone(x)
+        x = self.pts_neck(x)
+        # y = x[0] + x[1]
+        bev_embed = F.interpolate(x[0], size=(200, 200), mode='bilinear')[:, 0: 256, :, :]
+        # x = self.bev_conv(x)
+        # print('bev_embed:')
+        # print(bev_embed.shape)
+        # print(bev_embed)
 
         bbox_list = [dict() for i in range(len(img_metas))]
-        if pts_feats and self.with_pts_bbox:
-            bbox_pts = self.simple_test_pts(bev_embed, img_metas, rescale=rescale)
+        bbox_pts = self.simple_test_pts(bev_embed, img_metas, rescale=rescale)
 
-            for result_dict, pts_bbox in zip(bbox_list, bbox_pts):
-                result_dict['pts_bbox'] = pts_bbox
+        for result_dict, pts_bbox in zip(bbox_list, bbox_pts):
+            result_dict['pts_bbox'] = pts_bbox
 
         return bbox_list
 
     def simple_test_pts(self, bev_embed, img_metas, rescale=False):
         """Test function of point cloud branch."""
+        # head
         outs = self.pts_bbox_head(bev_embed, img_metas=img_metas)
 
         bbox_list = self.pts_bbox_head.get_bboxes(outs, img_metas, rescale=rescale)

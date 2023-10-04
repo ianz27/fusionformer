@@ -22,67 +22,82 @@ _num_levels_ = 1
 bev_h_ = 200
 bev_w_ = 200
 transformer_num_layers = 3
+num_query = 300  # 900
+image_size = [256, 704]
 
 voxel_size = [0.1, 0.1, 0.2]
+img_norm_cfg = dict(mean=[123.675, 116.28, 103.53], std=[58.395, 57.12, 57.375], to_rgb=True)
 model = dict(
     type='FusionFormer',
     # camera
+    pretrained=dict(img='torchvision://resnet50'),
     img_backbone=dict(
-        type="ResNet",
+        type='ResNet',
         depth=50,
         num_stages=4,
-        out_indices=(1, 2, 3),
-        frozen_stages=4,
-        norm_cfg=dict(type="BN2d", requires_grad=False),
+        out_indices=(3,),
+        frozen_stages=1,
+        norm_cfg=dict(type='BN', requires_grad=False),
         norm_eval=True,
-        style="caffe",
-        dcn=dict(
-            type="DCNv2", deform_groups=1, fallback_on_stride=False
-        ),  # original DCNv2 will print log when perform load_state_dict
-        stage_with_dcn=(False, False, False, False),
-    ),
+        style='pytorch'),
     img_neck=dict(
-        type="FPN",
-        in_channels=[512, 1024, 2048],
+        type='FPN',
+        in_channels=[2048],
         out_channels=_dim_,
         start_level=0,
-        add_extra_convs="on_output",
-        num_outs=4,
-        relu_before_extra_convs=True,
-    ),
-    # view transformer, TODO: add to registry
-    vtransform_feat_level=2,
-    vtransform=dict(
-        # type='LSSTransform',
-        in_channels=_dim_,
-        out_channels=_dim_,
-        image_size=[928, 1600],  # [928, 1600]
-        feature_size=[29, 50],  # [116, 200], [58, 100], [29, 50], [15, 25]
-        # xbound=[-51.2, 51.2, 0.8],
-        # ybound=[-51.2, 51.2, 0.8],
-        xbound=[-50.0, 50.0, 0.5],
-        ybound=[-50.0, 50.0, 0.5],
-        zbound=[-10.0, 10.0, 20.0],
-        dbound=[1.0, 60.0, 1.0],),
+        add_extra_convs='on_output',
+        num_outs=_num_levels_,
+        relu_before_extra_convs=True),
+    pts_backbone=dict(
+        type='SECOND',
+        in_channels=256,
+        out_channels=[128, 256],
+        layer_nums=[5, 5],
+        layer_strides=[1, 2],
+        norm_cfg=dict(type='BN', eps=1e-3, momentum=0.01),
+        conv_cfg=dict(type='Conv2d', bias=False)),
+    pts_neck=dict(
+        type='SECONDFPN',
+        in_channels=[128, 256],
+        out_channels=[256, 256],
+        upsample_strides=[1, 2],
+        norm_cfg=dict(type='BN', eps=1e-3, momentum=0.01),
+        upsample_cfg=dict(type='deconv', bias=False),
+        use_conv_for_no_stride=True),
     fusion_layer=dict(
-        # type='ConvFuser',  # TODO: add to registry
-        in_channels=[512, 256], out_channels=256),  # hard coding
+        type='BEVFusion',
+        in_channels=512,  # 512: cat two 256 pts_feat; 256: vtransform
+        out_channels=_dim_,
+        out_h=bev_h_,
+        out_w=bev_w_,
+        # view transformer
+        vtransform_feat_level=0,
+        vtransform=dict(
+            # type='LSSTransform',
+            in_channels=_dim_,
+            out_channels=_dim_,
+            image_size=image_size,  # [928, 1600]
+            feature_size=[image_size[0]//32, image_size[1]//32],  # [116, 200], [58, 100], [29, 50], [15, 25]
+            xbound=[-51.2, 51.2, 0.8],
+            ybound=[-51.2, 51.2, 0.8],
+            zbound=[-10.0, 10.0, 20.0],
+            dbound=[1.0, 60.0, 1.0],
+            # xbound=[-50.0, 50.0, 0.5],
+            # ybound=[-50.0, 50.0, 0.5],
+            # zbound=[-10.0, 10.0, 20.0],
+            # dbound=[1.0, 60.0, 1.0],
+            ),
+    ),
     pts_bbox_head=dict(
         type='FusionFormerHead',
         bev_h=bev_h_,
         bev_w=bev_w_,
-        num_query=900,
+        num_query=num_query,
         num_classes=10,
         in_channels=_dim_,
         sync_cls_avg_factor=True,
         with_box_refine=True,
         as_two_stage=False,
-        fusion_layer=dict(
-            type='BEVFusion',
-            in_channels=512,  # cat two 256 pts_feat
-            out_channels=_dim_,
-            out_h=bev_h_,
-            out_w=bev_w_,),
         transformer=dict(
             type='PerceptionTransformer',
             rotate_prev_bev=True,
@@ -170,8 +185,8 @@ data_root = 'data/nuscenes/'
 # Input modality for nuScenes dataset, this is consistent with the submission
 # format which requires the information in input_modality.
 input_modality = dict(
-    use_lidar=True,
-    use_camera=False,
+    use_lidar=False,
+    use_camera=True,
     use_radar=False,
     use_map=False,
     use_external=False)
@@ -227,6 +242,8 @@ train_pipeline = [
         file_client_args=file_client_args,
         pad_empty_sweeps=True,
         remove_close=True),
+    dict(type='LoadMultiViewImageFromFiles', to_float32=True),
+    dict(type='PhotoMetricDistortionMultiViewImage'),
     dict(type='LoadAnnotations3D', with_bbox_3d=True, with_label_3d=True),
     dict(type='ObjectSample', db_sampler=db_sampler),
     dict(
@@ -242,9 +259,33 @@ train_pipeline = [
     dict(type='PointsRangeFilter', point_cloud_range=point_cloud_range),
     dict(type='ObjectRangeFilter', point_cloud_range=point_cloud_range),
     dict(type='ObjectNameFilter', classes=class_names),
+    # type: ImageAug3D
+    # final_dim: ${image_size}
+    # resize_lim: ${augment2d.resize[0]}
+    # bot_pct_lim: [0.0, 0.0]
+    # rot_lim: ${augment2d.rotate}
+    # rand_flip: true
+    # is_train: true
+    dict(type='BEVFusionImageAug3D', 
+         final_dim=image_size,
+         resize_lim=[0.48, 0.48],  # [0.38, 0.55],
+         bot_pct_lim=[0.0, 0.0],
+         rot_lim=[0.0, 0.0],  # [-5.4, 5.4],
+         rand_flip=False,  # True,
+         is_train=False,  # True,
+         ),
+    dict(type='NormalizeMultiviewImage', **img_norm_cfg),
+    # dict(type='RandomScaleImageMultiViewImage', scales=[0.5]),
+    # dict(type='PadMultiViewImage', size_divisor=32),
     dict(type='PointShuffle'),
     dict(type='DefaultFormatBundle3D', class_names=class_names),
-    dict(type='Collect3D', keys=['points', 'gt_bboxes_3d', 'gt_labels_3d'])
+    dict(type='Collect3D', 
+         keys=['points', 'img', 'gt_bboxes_3d', 'gt_labels_3d'],
+         meta_keys=['filename', 'ori_shape', 'img_shape',
+                    'lidar2img', 'cam_intrinsic', 'lidar2cam', 'cam2lidar', 'img_aug_matrix',
+                    'pad_shape', 'scale_factor', 'flip', 'pcd_horizontal_flip', 'pcd_vertical_flip',
+                    'box_mode_3d', 'box_type_3d', 'img_norm_cfg', 'pcd_trans',
+                    'sample_idx', 'pcd_scale_factor', 'pcd_rotation', 'pts_filename', 'transformation_3d_flow'])
 ]
 test_pipeline = [
     dict(
@@ -260,49 +301,56 @@ test_pipeline = [
         file_client_args=file_client_args,
         pad_empty_sweeps=True,
         remove_close=True),
+    dict(type='LoadMultiViewImageFromFiles', to_float32=True),
+    dict(type='PointsRangeFilter', point_cloud_range=point_cloud_range),
+    dict(type='BEVFusionImageAug3D', 
+        final_dim=image_size,
+        resize_lim=[0.48, 0.48],
+        bot_pct_lim=[0.0, 0.0],
+        rot_lim=[0.0, 0.0],
+        rand_flip=False,
+        is_train=False,
+        ),
+    dict(type='NormalizeMultiviewImage', **img_norm_cfg),
     dict(
         type='MultiScaleFlipAug3D',
-        img_scale=(1333, 800),
+        img_scale=(1600, 900),
         pts_scale_ratio=1,
         flip=False,
         transforms=[
-            dict(
-                type='GlobalRotScaleTrans',
-                rot_range=[0, 0],
-                scale_ratio_range=[1., 1.],
-                translation_std=[0, 0, 0]),
-            dict(type='RandomFlip3D'),
-            dict(
-                type='PointsRangeFilter', point_cloud_range=point_cloud_range),
-            dict(
-                type='DefaultFormatBundle3D',
-                class_names=class_names,
-                with_label=False),
-            dict(type='Collect3D', keys=['points'])
-        ])
+            dict(type='DefaultFormatBundle3D', class_names=class_names),
+            dict(type='Collect3D',
+                keys=['points', 'img'],
+                meta_keys=['filename', 'ori_shape', 'img_shape',
+                            'lidar2img', 'cam_intrinsic', 'lidar2cam', 'cam2lidar', 'img_aug_matrix',
+                            'pad_shape', 'scale_factor', 'flip', 'pcd_horizontal_flip', 'pcd_vertical_flip',
+                            'box_mode_3d', 'box_type_3d', 'img_norm_cfg', 'pcd_trans',
+                            'sample_idx', 'pcd_scale_factor', 'pcd_rotation', 'pts_filename', 'transformation_3d_flow'])
+                ])
 ]
-# construct a pipeline for data and gt loading in show function
-# please keep its loading function consistent with test_pipeline (e.g. client)
-eval_pipeline = [
-    dict(
-        type='LoadPointsFromFile',
-        coord_type='LIDAR',
-        load_dim=5,
-        use_dim=5,
-        file_client_args=file_client_args),
-    dict(
-        type='LoadPointsFromMultiSweeps',
-        sweeps_num=9,
-        use_dim=[0, 1, 2, 3, 4],
-        file_client_args=file_client_args,
-        pad_empty_sweeps=True,
-        remove_close=True),
-    dict(
-        type='DefaultFormatBundle3D',
-        class_names=class_names,
-        with_label=False),
-    dict(type='Collect3D', keys=['points'])
-]
+eval_pipeline = test_pipeline
+# # construct a pipeline for data and gt loading in show function
+# # please keep its loading function consistent with test_pipeline (e.g. client)
+# eval_pipeline = [
+#     dict(
+#         type='LoadPointsFromFile',
+#         coord_type='LIDAR',
+#         load_dim=5,
+#         use_dim=5,
+#         file_client_args=file_client_args),
+#     dict(
+#         type='LoadPointsFromMultiSweeps',
+#         sweeps_num=9,
+#         use_dim=[0, 1, 2, 3, 4],
+#         file_client_args=file_client_args,
+#         pad_empty_sweeps=True,
+#         remove_close=True),
+#     dict(
+#         type='DefaultFormatBundle3D',
+#         class_names=class_names,
+#         with_label=False),
+#     dict(type='Collect3D', keys=['points'])
+# ]
 
 data = dict(
     samples_per_gpu=4,
@@ -337,7 +385,7 @@ data = dict(
         test_mode=True,
         box_type_3d='LiDAR'))
 
-evaluation = dict(interval=1, pipeline=eval_pipeline)
+evaluation = dict(interval=1, pipeline=test_pipeline)
 
 # For nuScenes dataset, we usually evaluate the model at the end of training.
 # Since the models are trained by 24 epochs by default, we set evaluation
