@@ -16,6 +16,7 @@ from .votenet import VoteNet
 from .voxelnet import VoxelNet
 from .fusionformer import FusionFormer
 from .detr3d import Detr3D
+from .pointformer import PointFormer
 
 __all__ = [
     'Base3DDetector', 'VoxelNet', 'DynamicVoxelNet', 'MVXTwoStageDetector',
@@ -23,5 +24,6 @@ __all__ = [
     'CenterPoint', 'SSD3DNet', 'ImVoteNet', 'SingleStageMono3DDetector',
     'FCOSMono3D', 'ImVoxelNet', 'GroupFree3DNet',
     'FusionFormer',
-    'Detr3D'
+    'Detr3D',
+    'PointFormer'
 ]
