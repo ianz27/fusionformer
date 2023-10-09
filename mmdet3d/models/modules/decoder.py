@@ -87,6 +87,8 @@ class DetectionTransformerDecoder(TransformerLayerSequence):
                 return_intermediate is `False`, otherwise it has shape
                 [num_layers, num_query, bs, embed_dims].
         """
+        # ## debug
+        # print('reference_points: ', reference_points.shape)
         output = query
         intermediate = []
         intermediate_reference_points = []
@@ -94,6 +96,8 @@ class DetectionTransformerDecoder(TransformerLayerSequence):
 
             reference_points_input = reference_points[..., :2].unsqueeze(
                 2)  # BS NUM_QUERY NUM_LEVEL 2
+            # ## debug
+            # print('reference_points_input: ', lid, reference_points_input.shape)
             output = layer(
                 output,
                 *args,
@@ -116,6 +120,9 @@ class DetectionTransformerDecoder(TransformerLayerSequence):
                 new_reference_points = new_reference_points.sigmoid()
 
                 reference_points = new_reference_points.detach()
+
+                # ## debug
+                # print('reference_points: ', lid, reference_points.shape)
 
             output = output.permute(1, 0, 2)
             if self.return_intermediate:

@@ -1,22 +1,22 @@
 import copy
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
 from mmcv.cnn import Linear, bias_init_with_prob
-from mmcv.runner import force_fp32
-                        
+from mmcv.utils import TORCH_VERSION, digit_version
 from mmdet.core import (multi_apply, multi_apply, reduce_mean)
 from mmdet.models.utils.transformer import inverse_sigmoid
 from mmdet.models import HEADS
 from mmdet.models.dense_heads import DETRHead
 from mmdet3d.core.bbox.coders import build_bbox_coder
 from mmdet3d.core.bbox.util import normalize_bbox
+from mmcv.runner import force_fp32, auto_fp16
 
 
 @HEADS.register_module()
-class FusionFormerHead(DETRHead):
-    """Head of Detr3D. 
+class PointFormerHead(DETRHead):
+    """Head of Detr3D.
     Args:
         with_box_refine (bool): Whether to refine the reference points
             in the decoder. Defaults to False.
@@ -24,16 +24,26 @@ class FusionFormerHead(DETRHead):
             the outputs of encoder.
         transformer (obj:`ConfigDict`): ConfigDict is used for building
             the Encoder and Decoder.
+        bev_h, bev_w (int): spatial shape of BEV queries.
     """
+
     def __init__(self,
                  *args,
                  with_box_refine=False,
                  as_two_stage=False,
+                 fusion_layer=None,
                  transformer=None,
                  bbox_coder=None,
                  num_cls_fcs=2,
                  code_weights=None,
+                 bev_h=30,
+                 bev_w=30,
                  **kwargs):
+
+        self.bev_h = bev_h
+        self.bev_w = bev_w
+        self.fp16_enabled = False
+
         self.with_box_refine = with_box_refine
         self.as_two_stage = as_two_stage
         if self.as_two_stage:
@@ -45,12 +55,15 @@ class FusionFormerHead(DETRHead):
         if code_weights is not None:
             self.code_weights = code_weights
         else:
-            self.code_weights = [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.2, 0.2]
-        
+            self.code_weights = [1.0, 1.0, 1.0,
+                                 1.0, 1.0, 1.0, 1.0, 1.0, 0.2, 0.2]
+
         self.bbox_coder = build_bbox_coder(bbox_coder)
         self.pc_range = self.bbox_coder.pc_range
+        self.real_w = self.pc_range[3] - self.pc_range[0]
+        self.real_h = self.pc_range[4] - self.pc_range[1]
         self.num_cls_fcs = num_cls_fcs - 1
-        super(FusionFormerHead, self).__init__(
+        super(PointFormerHead, self).__init__(
             *args, transformer=transformer, **kwargs)
         self.code_weights = nn.Parameter(torch.tensor(
             self.code_weights, requires_grad=False), requires_grad=False)
@@ -90,6 +103,8 @@ class FusionFormerHead(DETRHead):
                 [reg_branch for _ in range(num_pred)])
 
         if not self.as_two_stage:
+            self.bev_embedding = nn.Embedding(
+                self.bev_h * self.bev_w, self.embed_dims)
             self.query_embedding = nn.Embedding(self.num_query,
                                                 self.embed_dims * 2)
 
@@ -101,12 +116,12 @@ class FusionFormerHead(DETRHead):
             for m in self.cls_branches:
                 nn.init.constant_(m[-1].bias, bias_init)
 
-    def forward(self, pts_feats, mlvl_feats, img_metas):
+    @auto_fp16(apply_to=('bev_embed'))
+    def forward(self, bev_embed, img_metas):
         """Forward function.
         Args:
-            mlvl_feats (tuple[Tensor]): Features from the upstream
-                network, each is a 5D-tensor with shape
-                (B, N, C, H, W).
+            pts_feats (list[Tensor]): 1 len list, with shape (B, C, H, W)
+
         Returns:
             all_cls_scores (Tensor): Outputs from the classification head, \
                 shape [nb_dec, bs, num_query, cls_out_channels]. Note \
@@ -116,19 +131,31 @@ class FusionFormerHead(DETRHead):
                 Shape [nb_dec, bs, num_query, 9].
         """
 
-        query_embeds = self.query_embedding.weight
-        
-        hs, init_reference, inter_references = self.transformer(
-            pts_feats,
-            mlvl_feats,
-            query_embeds,
-            reg_branches=self.reg_branches if self.with_box_refine else None,  # noqa:E501
-            img_metas=img_metas,
-        )
+        # ## debug
+        # print('fusionformer_head: ')
+        # print('pts_feats: ', len(pts_feats), pts_feats[0].shape)  # pts_feats:  1 torch.Size([4, 512, 128, 128])
+
+        dtype = bev_embed.dtype
+        object_query_embeds = self.query_embedding.weight.to(dtype)
+
+        B, C, H, W = bev_embed.shape
+        bev_embed = bev_embed.permute(2, 3, 0, 1).contiguous().view(H * W, B, C)
+
+        outputs = self.transformer.get_states_and_refs(
+            bev_embed,
+            object_query_embeds,
+            self.bev_h,
+            self.bev_w,
+            reference_points=None,
+            reg_branches=self.reg_branches,
+            cls_branches=self.cls_branches,
+            img_metas=img_metas
+            )
+        hs, init_reference, inter_references = outputs
+
         hs = hs.permute(0, 2, 1, 3)
         outputs_classes = []
         outputs_coords = []
-
         for lvl in range(hs.shape[0]):
             if lvl == 0:
                 reference = init_reference
@@ -144,9 +171,12 @@ class FusionFormerHead(DETRHead):
             tmp[..., 0:2] = tmp[..., 0:2].sigmoid()
             tmp[..., 4:5] += reference[..., 2:3]
             tmp[..., 4:5] = tmp[..., 4:5].sigmoid()
-            tmp[..., 0:1] = (tmp[..., 0:1] * (self.pc_range[3] - self.pc_range[0]) + self.pc_range[0])
-            tmp[..., 1:2] = (tmp[..., 1:2] * (self.pc_range[4] - self.pc_range[1]) + self.pc_range[1])
-            tmp[..., 4:5] = (tmp[..., 4:5] * (self.pc_range[5] - self.pc_range[2]) + self.pc_range[2])
+            tmp[..., 0:1] = (tmp[..., 0:1] * (self.pc_range[3] -
+                             self.pc_range[0]) + self.pc_range[0])
+            tmp[..., 1:2] = (tmp[..., 1:2] * (self.pc_range[4] -
+                             self.pc_range[1]) + self.pc_range[1])
+            tmp[..., 4:5] = (tmp[..., 4:5] * (self.pc_range[5] -
+                             self.pc_range[2]) + self.pc_range[2])
 
             # TODO: check if using sigmoid
             outputs_coord = tmp
@@ -155,12 +185,15 @@ class FusionFormerHead(DETRHead):
 
         outputs_classes = torch.stack(outputs_classes)
         outputs_coords = torch.stack(outputs_coords)
+
         outs = {
+            'bev_embed': bev_embed,
             'all_cls_scores': outputs_classes,
             'all_bbox_preds': outputs_coords,
             'enc_cls_scores': None,
-            'enc_bbox_preds': None, 
+            'enc_bbox_preds': None,
         }
+
         return outs
 
     def _get_target_single(self,
@@ -195,28 +228,31 @@ class FusionFormerHead(DETRHead):
 
         num_bboxes = bbox_pred.size(0)
         # assigner and sampler
+        gt_c = gt_bboxes.shape[-1]
+
         assign_result = self.assigner.assign(bbox_pred, cls_score, gt_bboxes,
                                              gt_labels, gt_bboxes_ignore)
+
         sampling_result = self.sampler.sample(assign_result, bbox_pred,
                                               gt_bboxes)
         pos_inds = sampling_result.pos_inds
         neg_inds = sampling_result.neg_inds
 
         # label targets
-        labels = gt_bboxes.new_full((num_bboxes, ),
+        labels = gt_bboxes.new_full((num_bboxes,),
                                     self.num_classes,
                                     dtype=torch.long)
         labels[pos_inds] = gt_labels[sampling_result.pos_assigned_gt_inds]
         label_weights = gt_bboxes.new_ones(num_bboxes)
 
         # bbox targets
-        bbox_targets = torch.zeros_like(bbox_pred)[..., :9]
+        bbox_targets = torch.zeros_like(bbox_pred)[..., :gt_c]
         bbox_weights = torch.zeros_like(bbox_pred)
         bbox_weights[pos_inds] = 1.0
 
         # DETR
         bbox_targets[pos_inds] = sampling_result.pos_gt_bboxes
-        return (labels, label_weights, bbox_targets, bbox_weights, 
+        return (labels, label_weights, bbox_targets, bbox_weights,
                 pos_inds, neg_inds)
 
     def get_targets(self,
@@ -263,8 +299,8 @@ class FusionFormerHead(DETRHead):
 
         (labels_list, label_weights_list, bbox_targets_list,
          bbox_weights_list, pos_inds_list, neg_inds_list) = multi_apply(
-             self._get_target_single, cls_scores_list, bbox_preds_list,
-             gt_labels_list, gt_bboxes_list, gt_bboxes_ignore_list)
+            self._get_target_single, cls_scores_list, bbox_preds_list,
+            gt_labels_list, gt_bboxes_list, gt_bboxes_ignore_list)
         num_total_pos = sum((inds.numel() for inds in pos_inds_list))
         num_total_neg = sum((inds.numel() for inds in neg_inds_list))
         return (labels_list, label_weights_list, bbox_targets_list,
@@ -298,7 +334,7 @@ class FusionFormerHead(DETRHead):
         cls_scores_list = [cls_scores[i] for i in range(num_imgs)]
         bbox_preds_list = [bbox_preds[i] for i in range(num_imgs)]
         cls_reg_targets = self.get_targets(cls_scores_list, bbox_preds_list,
-                                           gt_bboxes_list, gt_labels_list, 
+                                           gt_bboxes_list, gt_labels_list,
                                            gt_bboxes_ignore_list)
         (labels_list, label_weights_list, bbox_targets_list, bbox_weights_list,
          num_total_pos, num_total_neg) = cls_reg_targets
@@ -332,21 +368,24 @@ class FusionFormerHead(DETRHead):
         bbox_weights = bbox_weights * self.code_weights
 
         loss_bbox = self.loss_bbox(
-                bbox_preds[isnotnan, :10], normalized_bbox_targets[isnotnan, :10], bbox_weights[isnotnan, :10], avg_factor=num_total_pos)
-
-        loss_cls = torch.nan_to_num(loss_cls)
-        loss_bbox = torch.nan_to_num(loss_bbox)
+            bbox_preds[isnotnan, :10], normalized_bbox_targets[isnotnan,
+                                                               :10], bbox_weights[isnotnan, :10],
+            avg_factor=num_total_pos)
+        if digit_version(TORCH_VERSION) >= digit_version('1.8'):
+            loss_cls = torch.nan_to_num(loss_cls)
+            loss_bbox = torch.nan_to_num(loss_bbox)
         return loss_cls, loss_bbox
-    
+
     @force_fp32(apply_to=('preds_dicts'))
     def loss(self,
              gt_bboxes_list,
              gt_labels_list,
              preds_dicts,
-             gt_bboxes_ignore=None):
+             gt_bboxes_ignore=None,
+             img_metas=None):
         """"Loss function.
         Args:
-            
+
             gt_bboxes_list (list[Tensor]): Ground truth bboxes for each image
                 with shape (num_gts, 4) in [tl_x, tl_y, br_x, br_y] format.
             gt_labels_list (list[Tensor]): Ground truth class indices for each
@@ -382,6 +421,7 @@ class FusionFormerHead(DETRHead):
 
         num_dec_layers = len(all_cls_scores)
         device = gt_labels_list[0].device
+
         gt_bboxes_list = [torch.cat(
             (gt_bboxes.gravity_center, gt_bboxes.tensor[:, 3:]),
             dim=1).to(device) for gt_bboxes in gt_bboxes_list]
@@ -394,7 +434,7 @@ class FusionFormerHead(DETRHead):
 
         losses_cls, losses_bbox = multi_apply(
             self.loss_single, all_cls_scores, all_bbox_preds,
-            all_gt_bboxes_list, all_gt_labels_list, 
+            all_gt_bboxes_list, all_gt_labels_list,
             all_gt_bboxes_ignore_list)
 
         loss_dict = dict()
@@ -432,15 +472,23 @@ class FusionFormerHead(DETRHead):
         Returns:
             list[dict]: Decoded bbox, scores and labels after nms.
         """
+
         preds_dicts = self.bbox_coder.decode(preds_dicts)
+
         num_samples = len(preds_dicts)
         ret_list = []
         for i in range(num_samples):
             preds = preds_dicts[i]
             bboxes = preds['bboxes']
+
             bboxes[:, 2] = bboxes[:, 2] - bboxes[:, 5] * 0.5
-            bboxes = img_metas[i]['box_type_3d'](bboxes, 9)
+
+            code_size = bboxes.shape[-1]
+            bboxes = img_metas[i]['box_type_3d'](bboxes, code_size)
             scores = preds['scores']
             labels = preds['labels']
+
             ret_list.append([bboxes, scores, labels])
+
         return ret_list
+

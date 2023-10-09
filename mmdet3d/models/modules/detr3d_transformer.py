@@ -1,4 +1,4 @@
-
+import warnings
 import numpy as np
 import torch
 import torch.nn as nn
@@ -175,10 +175,13 @@ class Detr3DTransformerDecoder(TransformerLayerSequence):
                 return_intermediate is `False`, otherwise it has shape
                 [num_layers, num_query, bs, embed_dims].
         """
+        # ## debug
+        # print('reference_points: ', reference_points.shape)
         output = query
         intermediate = []
         intermediate_reference_points = []
         for lid, layer in enumerate(self.layers):
+            print(args)
             reference_points_input = reference_points
             output = layer(
                 output,
@@ -201,6 +204,9 @@ class Detr3DTransformerDecoder(TransformerLayerSequence):
                 new_reference_points = new_reference_points.sigmoid()
 
                 reference_points = new_reference_points.detach()
+
+                # ## debug
+                # print('reference_points: ', lid, reference_points.shape)
 
             output = output.permute(1, 0, 2)
             if self.return_intermediate:
@@ -342,6 +348,8 @@ class Detr3DCrossAtten(BaseModule):
         Returns:
              Tensor: forwarded results with shape [num_query, bs, embed_dims].
         """
+        ## debug
+        print('Detr3DCrossAtten value: ', len(value), value[0].shape)
 
         if key is None:
             key = query

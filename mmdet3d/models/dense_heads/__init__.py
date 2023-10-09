@@ -12,6 +12,7 @@ from .shape_aware_head import ShapeAwareHead
 from .ssd_3d_head import SSD3DHead
 from .vote_head import VoteHead
 from .fusionformer_head import FusionFormerHead
+from .pointformer_head import PointFormerHead
 from .detr3d_head import Detr3DHead
 
 __all__ = [
@@ -20,5 +21,6 @@ __all__ = [
     'BaseMono3DDenseHead', 'AnchorFreeMono3DHead', 'FCOSMono3DHead',
     'GroupFree3DHead',
     'FusionFormerHead',
+    'PointFormerHead',
     'Detr3DHead'
 ]

@@ -1,15 +1,18 @@
 # 
-
 find_unused_parameters = True
 
-# If point cloud range is changed, the models should also change their point
-# cloud range accordingly
-point_cloud_range = [-51.2, -51.2, -5.0, 51.2, 51.2, 3.0]
+img_norm_cfg = dict(
+    mean=[103.530, 116.280, 123.675], std=[1.0, 1.0, 1.0], to_rgb=False)
 # For nuScenes we usually do 10-class detection
 class_names = [
     'car', 'truck', 'construction_vehicle', 'bus', 'trailer', 'barrier',
     'motorcycle', 'bicycle', 'pedestrian', 'traffic_cone'
 ]
+
+# If point cloud range is changed, the models should also change their point
+# cloud range accordingly
+point_cloud_range = [-51.2, -51.2, -5.0, 51.2, 51.2, 3.0]
+voxel_size = [0.1, 0.1, 0.2]
 
 _dim_ = 256
 _pos_dim_ = _dim_//2
@@ -19,9 +22,30 @@ bev_h_ = 128
 bev_w_ = 128
 transformer_num_layers = 3
 
-voxel_size = [0.1, 0.1, 0.2]
 model = dict(
-    type='PointFormer',
+    type='FusionFormer',
+    # camera
+    use_grid_mask=True,
+    img_backbone=dict(
+        type='ResNet',
+        depth=101,
+        num_stages=4,
+        out_indices=(0, 1, 2, 3),
+        frozen_stages=1,
+        norm_cfg=dict(type='BN2d', requires_grad=False),
+        norm_eval=True,
+        style='caffe',
+        dcn=dict(type='DCNv2', deform_groups=1, fallback_on_stride=False),
+        stage_with_dcn=(False, False, True, True)),
+    img_neck=dict(
+        type='FPN',
+        in_channels=[256, 512, 1024, 2048],
+        out_channels=256,
+        start_level=1,
+        add_extra_convs='on_output',
+        num_outs=4,
+        relu_before_extra_convs=True),
+    # lidar
     pts_voxel_layer=dict(
         point_cloud_range=point_cloud_range,
         max_num_points=10, voxel_size=voxel_size, max_voxels=(90000, 120000)),
@@ -55,42 +79,42 @@ model = dict(
         relu_before_extra_convs=True,
         ),
     pts_bbox_head=dict(
-        type='PointFormerHead',
-        bev_h=bev_h_,
-        bev_w=bev_w_,
+        type='FusionFormerHead',
         num_query=900,
         num_classes=10,
-        in_channels=_dim_,
+        in_channels=256,
         sync_cls_avg_factor=True,
         with_box_refine=True,
         as_two_stage=False,
         transformer=dict(
-            type='PerceptionTransformer',
-            rotate_prev_bev=True,
-            use_shift=True,
-            use_can_bus=True,
-            embed_dims=_dim_,
+            type='FusionTransformer',
             decoder=dict(
-                type='DetectionTransformerDecoder',
+                type='FusionTransformerDecoder',
                 num_layers=transformer_num_layers,
                 return_intermediate=True,
                 transformerlayers=dict(
-                    type='DetrTransformerDecoderLayer',
+                    type='FusionDetrTransformerDecoderLayer',
                     attn_cfgs=[
                         dict(
                             type='MultiheadAttention',
                             embed_dims=_dim_,
                             num_heads=8,
                             dropout=0.1),
-                         dict(
-                            type='CustomMSDeformableAttention',
+                        dict(
+                            type='BEVMSDeformableAttention',  # lidar
                             embed_dims=_dim_,
                             num_levels=1),
+                        dict(
+                            type='Detr3DCrossAtten',  # camera
+                            pc_range=point_cloud_range,
+                            num_points=1,
+                            embed_dims=_dim_)
                     ],
-
                     feedforward_channels=_ffn_dim_,
                     ffn_dropout=0.1,
-                    operation_order=('self_attn', 'norm', 'cross_attn', 'norm',
+                    operation_order=('self_attn', 'norm', 
+                                     'cross_attn', 'norm',
+                                     'cross_attn', 'norm',
                                      'ffn', 'norm')))),
         bbox_coder=dict(
             type='NMSFreeCoder',
@@ -99,12 +123,12 @@ model = dict(
             max_num=300,
             voxel_size=voxel_size,
             num_classes=10),
+        # TODO: LearnedPositionalEncoding
         positional_encoding=dict(
-            type='LearnedPositionalEncoding',
-            num_feats=_pos_dim_,
-            row_num_embed=bev_h_,
-            col_num_embed=bev_w_,
-            ),
+            type='SinePositionalEncoding',
+            num_feats=128,
+            normalize=True,
+            offset=-0.5),
         loss_cls=dict(
             type='FocalLoss',
             use_sigmoid=True,
@@ -114,6 +138,7 @@ model = dict(
         loss_bbox=dict(type='L1Loss', loss_weight=0.25),
         loss_iou=dict(type='GIoULoss', loss_weight=0.0)),
     # model training and testing settings
+    # TODO: ?
     train_cfg=dict(
         pts=dict(
             point_cloud_range=point_cloud_range,
@@ -152,7 +177,7 @@ data_root = 'data/nuscenes/'
 # format which requires the information in input_modality.
 input_modality = dict(
     use_lidar=True,
-    use_camera=False,
+    use_camera=True,
     use_radar=False,
     use_map=False,
     use_external=False)
@@ -195,6 +220,9 @@ db_sampler = dict(
         file_client_args=file_client_args))
 
 train_pipeline = [
+    dict(type='LoadMultiViewImageFromFiles', to_float32=True),
+    dict(type='PhotoMetricDistortionMultiViewImage'),
+    dict(type='LoadAnnotations3D', with_bbox_3d=True, with_label_3d=True, with_attr_label=False),
     dict(
         type='LoadPointsFromFile',
         coord_type='LIDAR',
@@ -215,19 +243,25 @@ train_pipeline = [
         rot_range=[-0.3925, 0.3925],
         scale_ratio_range=[0.95, 1.05],
         translation_std=[0, 0, 0]),
-    dict(
-        type='RandomFlip3D',
-        sync_2d=False,
-        flip_ratio_bev_horizontal=0.5,
-        flip_ratio_bev_vertical=0.5),
+    # TODO: ??
+    # dict(
+    #     type='RandomFlip3D',
+    #     sync_2d=False,
+    #     flip_ratio_bev_horizontal=0.5,
+    #     flip_ratio_bev_vertical=0.5),
     dict(type='PointsRangeFilter', point_cloud_range=point_cloud_range),
     dict(type='ObjectRangeFilter', point_cloud_range=point_cloud_range),
     dict(type='ObjectNameFilter', classes=class_names),
+    dict(type='NormalizeMultiviewImage', **img_norm_cfg),
+    dict(type='PadMultiViewImage', size_divisor=32),
     dict(type='PointShuffle'),
     dict(type='DefaultFormatBundle3D', class_names=class_names),
-    dict(type='Collect3D', keys=['points', 'gt_bboxes_3d', 'gt_labels_3d'])
+    dict(type='Collect3D', keys=['points', 'img', 'gt_bboxes_3d', 'gt_labels_3d'])
 ]
 test_pipeline = [
+    dict(type='LoadMultiViewImageFromFiles', to_float32=True),
+    dict(type='NormalizeMultiviewImage', **img_norm_cfg),
+    dict(type='PadMultiViewImage', size_divisor=32),
     dict(
         type='LoadPointsFromFile',
         coord_type='LIDAR',
@@ -252,41 +286,19 @@ test_pipeline = [
                 rot_range=[0, 0],
                 scale_ratio_range=[1., 1.],
                 translation_std=[0, 0, 0]),
-            dict(type='RandomFlip3D'),
+            # dict(type='RandomFlip3D'),
             dict(
                 type='PointsRangeFilter', point_cloud_range=point_cloud_range),
             dict(
                 type='DefaultFormatBundle3D',
                 class_names=class_names,
                 with_label=False),
-            dict(type='Collect3D', keys=['points'])
+            dict(type='Collect3D', keys=['points', 'img'])
         ])
-]
-# construct a pipeline for data and gt loading in show function
-# please keep its loading function consistent with test_pipeline (e.g. client)
-eval_pipeline = [
-    dict(
-        type='LoadPointsFromFile',
-        coord_type='LIDAR',
-        load_dim=5,
-        use_dim=5,
-        file_client_args=file_client_args),
-    dict(
-        type='LoadPointsFromMultiSweeps',
-        sweeps_num=9,
-        use_dim=[0, 1, 2, 3, 4],
-        file_client_args=file_client_args,
-        pad_empty_sweeps=True,
-        remove_close=True),
-    dict(
-        type='DefaultFormatBundle3D',
-        class_names=class_names,
-        with_label=False),
-    dict(type='Collect3D', keys=['points'])
 ]
 
 data = dict(
-    samples_per_gpu=4,
+    samples_per_gpu=1,
     workers_per_gpu=4,
     train=dict(
         type=dataset_type,
@@ -296,6 +308,7 @@ data = dict(
         classes=class_names,
         modality=input_modality,
         test_mode=False,
+        use_valid_flag=True,
         # we use box_type_3d='LiDAR' in kitti and nuscenes dataset
         # and box_type_3d='Depth' in sunrgbd and scannet dataset.
         box_type_3d='LiDAR'),
@@ -318,7 +331,7 @@ data = dict(
         test_mode=True,
         box_type_3d='LiDAR'))
 
-evaluation = dict(interval=1, pipeline=eval_pipeline)
+evaluation = dict(interval=1, pipeline=test_pipeline)
 
 # For nuScenes dataset, we usually evaluate the model at the end of training.
 # Since the models are trained by 24 epochs by default, we set evaluation
@@ -359,6 +372,6 @@ log_config = dict(
 dist_params = dict(backend='nccl')
 log_level = 'INFO'
 work_dir = None
-load_from = None
+load_from = 'pth/fcos3d.pth'
 resume_from = None
 workflow = [('train', 1)]
