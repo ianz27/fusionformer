@@ -119,11 +119,15 @@ class FusionFormerHead(DETRHead):
                 Shape [nb_dec, bs, num_query, 9].
         """
         bs = mlvl_feats[0].size(0)
-        query_embeds = self.query_embedding.weight
+        if query_embeds is None:
+            query_embeds = self.query_embedding.weight
         query_pos, query = torch.split(query_embeds, self.embed_dims , dim=1)
         query_pos = query_pos.unsqueeze(0).expand(bs, -1, -1)
         query = query.unsqueeze(0).expand(bs, -1, -1)
-        reference_points = self.reference_points(query_pos)
+        if reference_points is None:
+            reference_points = self.reference_points(query_pos)
+        else:
+            reference_points = reference_points.unsqueeze(0).expand(bs, -1, -1)
         reference_points = reference_points.sigmoid()
         
         hs, init_reference, inter_references = self.transformer(
@@ -154,6 +158,12 @@ class FusionFormerHead(DETRHead):
             tmp[..., 0:2] = tmp[..., 0:2].sigmoid()
             tmp[..., 4:5] += reference[..., 2:3]
             tmp[..., 4:5] = tmp[..., 4:5].sigmoid()
+
+            # for track
+            last_ref_points = torch.cat(
+                [tmp[..., 0:2], tmp[..., 4:5]], dim=-1,
+            )
+
             tmp[..., 0:1] = (tmp[..., 0:1] * (self.pc_range[3] - self.pc_range[0]) + self.pc_range[0])
             tmp[..., 1:2] = (tmp[..., 1:2] * (self.pc_range[4] - self.pc_range[1]) + self.pc_range[1])
             tmp[..., 4:5] = (tmp[..., 4:5] * (self.pc_range[5] - self.pc_range[2]) + self.pc_range[2])
@@ -165,11 +175,14 @@ class FusionFormerHead(DETRHead):
 
         outputs_classes = torch.stack(outputs_classes)
         outputs_coords = torch.stack(outputs_coords)
+        last_ref_points = inverse_sigmoid(last_ref_points)
         outs = {
             'all_cls_scores': outputs_classes,
             'all_bbox_preds': outputs_coords,
             'enc_cls_scores': None,
-            'enc_bbox_preds': None, 
+            'enc_bbox_preds': None,
+            'last_ref_points': last_ref_points,
+            'query_feats': hs,
         }
         return outs
 
