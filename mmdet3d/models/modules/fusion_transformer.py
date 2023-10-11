@@ -179,7 +179,7 @@ class FusionDetrTransformerDecoderLayer(BaseTransformerLayer):
                     key_padding_mask=key_padding_mask,
                     **kwargs)
                 attn_index += 1
-                cross_index + 1
+                cross_index += 1
                 identity = query
 
             elif layer == 'ffn':
@@ -421,6 +421,7 @@ class FusionTransformer(BaseModule):
     """
 
     def __init__(self,
+                 num_query=300,
                  num_feature_levels=4,
                  num_cams=6,
                  two_stage_num_proposals=300,
@@ -429,14 +430,15 @@ class FusionTransformer(BaseModule):
         super(FusionTransformer, self).__init__(**kwargs)
         self.decoder = build_transformer_layer_sequence(decoder)
         self.embed_dims = self.decoder.embed_dims
+        self.num_query = num_query
         self.num_feature_levels = num_feature_levels
         self.num_cams = num_cams
         self.two_stage_num_proposals = two_stage_num_proposals
-        self.init_layers()
+        # self.init_layers()
 
-    def init_layers(self):
-        """Initialize layers of the FusionTransformer."""
-        self.reference_points = nn.Linear(self.embed_dims, 3)
+    # def init_layers(self):
+    #     """Initialize layers of the FusionTransformer."""
+    #     self.reference_points = nn.Linear(self.embed_dims, 3)
 
     def init_weights(self):
         """Initialize the transformer weights."""
@@ -446,12 +448,14 @@ class FusionTransformer(BaseModule):
         for m in self.modules():
             if isinstance(m, MultiScaleDeformableAttention) or isinstance(m, Detr3DCrossAtten):  # TODO: ??
                 m.init_weight()
-        xavier_init(self.reference_points, distribution='uniform', bias=0.)
+        # xavier_init(self.reference_points, distribution='uniform', bias=0.)
 
     def forward(self,
                 pts_feats,
                 mlvl_feats,
-                query_embed,
+                query=None,
+                query_pos=None,
+                reference_points=None,
                 reg_branches=None,
                 **kwargs):
         """Forward function for `Detr3DTransformer`.
@@ -491,14 +495,11 @@ class FusionTransformer(BaseModule):
                     be returned when `as_two_stage` is True, \
                     otherwise None.
         """
-        assert query_embed is not None
-        bs = mlvl_feats[0].size(0)
-        query_pos, query = torch.split(query_embed, self.embed_dims , dim=1)
-        query_pos = query_pos.unsqueeze(0).expand(bs, -1, -1)
-        query = query.unsqueeze(0).expand(bs, -1, -1)
-        reference_points = self.reference_points(query_pos)
-        reference_points = reference_points.sigmoid()
+
         init_reference_out = reference_points
+
+        B, C, H, W = pts_feats.shape
+        pts_feats = pts_feats.permute(2, 3, 0, 1).contiguous().view(H * W, B, C)
 
         # decoder
         query = query.permute(1, 0, 2)
@@ -510,6 +511,8 @@ class FusionTransformer(BaseModule):
             query_pos=query_pos,
             reference_points=reference_points,
             reg_branches=reg_branches,
+            spatial_shapes=torch.tensor([[H, W]], device=query.device),
+            level_start_index=torch.tensor([0], device=query.device),
             **kwargs)
 
         inter_references_out = inter_references

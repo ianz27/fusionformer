@@ -348,8 +348,8 @@ class Detr3DCrossAtten(BaseModule):
         Returns:
              Tensor: forwarded results with shape [num_query, bs, embed_dims].
         """
-        ## debug
-        print('Detr3DCrossAtten value: ', len(value), value[0].shape)
+        # ## debug
+        # print('Detr3DCrossAtten value: ', len(value), value[0].shape)
 
         if key is None:
             key = query

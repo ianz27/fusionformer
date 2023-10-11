@@ -28,7 +28,7 @@ model = dict(
     use_grid_mask=True,
     img_backbone=dict(
         type='ResNet',
-        depth=101,
+        depth=50,
         num_stages=4,
         out_indices=(0, 1, 2, 3),
         frozen_stages=1,
@@ -370,6 +370,6 @@ log_config = dict(
 dist_params = dict(backend='nccl')
 log_level = 'INFO'
 work_dir = None
-load_from = 'pth/fcos3d.pth'
+load_from = None
 resume_from = None
 workflow = [('train', 1)]

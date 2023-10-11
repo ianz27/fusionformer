@@ -3,9 +3,10 @@ import copy
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+from mmcv.cnn import xavier_init, constant_init
 from mmcv.cnn import Linear, bias_init_with_prob
 from mmcv.runner import force_fp32
-                        
 from mmdet.core import (multi_apply, multi_apply, reduce_mean)
 from mmdet.models.utils.transformer import inverse_sigmoid
 from mmdet.models import HEADS
@@ -89,9 +90,10 @@ class FusionFormerHead(DETRHead):
             self.reg_branches = nn.ModuleList(
                 [reg_branch for _ in range(num_pred)])
 
+        self.reference_points = nn.Linear(self.embed_dims, 3)
+
         if not self.as_two_stage:
-            self.query_embedding = nn.Embedding(self.num_query,
-                                                self.embed_dims * 2)
+            self.query_embedding = nn.Embedding(self.num_query, self.embed_dims * 2)
 
     def init_weights(self):
         """Initialize weights of the DeformDETR head."""
@@ -100,8 +102,9 @@ class FusionFormerHead(DETRHead):
             bias_init = bias_init_with_prob(0.01)
             for m in self.cls_branches:
                 nn.init.constant_(m[-1].bias, bias_init)
+        xavier_init(self.reference_points, distribution='uniform', bias=0.)
 
-    def forward(self, pts_feats, mlvl_feats, img_metas):
+    def forward(self, pts_feats, mlvl_feats, query_embeds=None, reference_points=None, img_metas=None):
         """Forward function.
         Args:
             mlvl_feats (tuple[Tensor]): Features from the upstream
@@ -115,13 +118,20 @@ class FusionFormerHead(DETRHead):
                 head with normalized coordinate format (cx, cy, w, l, cz, h, theta, vx, vy). \
                 Shape [nb_dec, bs, num_query, 9].
         """
-
+        bs = mlvl_feats[0].size(0)
         query_embeds = self.query_embedding.weight
+        query_pos, query = torch.split(query_embeds, self.embed_dims , dim=1)
+        query_pos = query_pos.unsqueeze(0).expand(bs, -1, -1)
+        query = query.unsqueeze(0).expand(bs, -1, -1)
+        reference_points = self.reference_points(query_pos)
+        reference_points = reference_points.sigmoid()
         
         hs, init_reference, inter_references = self.transformer(
             pts_feats,
             mlvl_feats,
-            query_embeds,
+            query,
+            query_pos,
+            reference_points,
             reg_branches=self.reg_branches if self.with_box_refine else None,  # noqa:E501
             img_metas=img_metas,
         )
