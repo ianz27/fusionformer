@@ -6,6 +6,7 @@ from .loading import (LoadAnnotations3D, LoadImageFromFileMono3D,
                       LoadMultiViewImageFromFiles, LoadPointsFromFile,
                       LoadPointsFromMultiSweeps, NormalizePointsColor,
                       PointSegClassMapping)
+from .loading_bevdet import (PrepareImageInputs)
 from .test_time_aug import MultiScaleFlipAug3D
 from .transforms_3d import (BackgroundPointsFilter, GlobalAlignment,
                             GlobalRotScaleTrans, IndoorPatchPointSample,
@@ -14,8 +15,9 @@ from .transforms_3d import (BackgroundPointsFilter, GlobalAlignment,
                             PointShuffle, PointsRangeFilter,
                             RandomDropPointsColor, RandomFlip3D,
                             RandomJitterPoints, VoxelBasedPointSampler)
-from .bevfusion_transforms_3d import (BEVFusionImageAug3D, BEVFusionGridMask,
+from .transforms_3d_bevfusion import (BEVFusionImageAug3D, BEVFusionGridMask,
                                       BEVFusionGlobalRotScaleTrans, BEVFusionGTDepth)
+# from .transforms_3d_bevdet import ()
 
 __all__ = [
     'ObjectSample', 'RandomFlip3D', 'ObjectNoise', 'GlobalRotScaleTrans',
@@ -29,4 +31,5 @@ __all__ = [
     'LoadImageFromFileMono3D', 'ObjectNameFilter', 'RandomDropPointsColor',
     'RandomJitterPoints',
     'BEVFusionImageAug3D', 'BEVFusionGridMask', 'BEVFusionGlobalRotScaleTrans', 'BEVFusionGTDepth',
+    'PrepareImageInputs'
 ]

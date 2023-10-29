@@ -181,7 +181,6 @@ class Detr3DTransformerDecoder(TransformerLayerSequence):
         intermediate = []
         intermediate_reference_points = []
         for lid, layer in enumerate(self.layers):
-            print(args)
             reference_points_input = reference_points
             output = layer(
                 output,

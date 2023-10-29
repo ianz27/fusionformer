@@ -17,10 +17,11 @@ from mmdet3d.core.bbox import (
     box_np_ops,
 )
 from mmdet.datasets.builder import PIPELINES
+from .transforms_3d import GlobalRotScaleTrans
 
 
 @PIPELINES.register_module()
-class BEVFusionImageAug3D:
+class BEVFusionImageAug3D(object):
     def __init__(
         self, final_dim, resize_lim, bot_pct_lim, rot_lim, rand_flip, is_train
     ):
@@ -32,8 +33,7 @@ class BEVFusionImageAug3D:
         self.is_train = is_train
 
     def sample_augmentation(self, results):
-        # print('ori_shape', results["ori_shape"])
-        H, W, C, N = results["ori_shape"]
+        H, W, C, N = results['ori_shape']
         fH, fW = self.final_dim
         if self.is_train:
             resize = np.random.uniform(*self.resize_lim)
@@ -91,7 +91,7 @@ class BEVFusionImageAug3D:
         return img, rotation, translation
 
     def __call__(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        imgs = data["img"]
+        imgs = data['img']
         new_imgs = []
         transforms = []
         for img in imgs:
@@ -113,54 +113,92 @@ class BEVFusionImageAug3D:
             transform[:2, 3] = translation
             new_imgs.append(np.array(new_img).astype(np.float32))
             transforms.append(transform.numpy())
-        data["img"] = new_imgs
+        data['img'] = new_imgs
         # update the calibration matrices
-        data["img_aug_matrix"] = transforms
+        data['img_aug_matrix'] = transforms
         return data
 
 
 @PIPELINES.register_module()
-class BEVFusionGlobalRotScaleTrans:
-    def __init__(self, resize_lim, rot_lim, trans_lim, is_train):
-        self.resize_lim = resize_lim
-        self.rot_lim = rot_lim
-        self.trans_lim = trans_lim
-        self.is_train = is_train
+class BEVFusionRandomFlip3D(object):
+    """Compared with `RandomFlip3D`, this class directly records the lidar
+    augmentation matrix in the `data`."""
 
     def __call__(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        transform = np.eye(4).astype(np.float32)
+        flip_horizontal = np.random.choice([0, 1])
+        flip_vertical = np.random.choice([0, 1])
 
-        if self.is_train:
-            scale = random.uniform(*self.resize_lim)
-            theta = random.uniform(*self.rot_lim)
-            translation = np.array([random.normal(0, self.trans_lim) for i in range(3)])
-            rotation = np.eye(3)
+        rotation = np.eye(3)
+        if flip_horizontal:
+            rotation = np.array([[1, 0, 0], [0, -1, 0], [0, 0, 1]]) @ rotation
+            if 'points' in data:
+                data['points'].flip('horizontal')
+            if 'gt_bboxes_3d' in data:
+                data['gt_bboxes_3d'].flip('horizontal')
+            if 'gt_masks_bev' in data:
+                data['gt_masks_bev'] = data['gt_masks_bev'][:, :, ::-1].copy()
 
-            if "points" in data:
-                data["points"].rotate(-theta)
-                data["points"].translate(translation)
-                data["points"].scale(scale)
+        if flip_vertical:
+            rotation = np.array([[-1, 0, 0], [0, 1, 0], [0, 0, 1]]) @ rotation
+            if 'points' in data:
+                data['points'].flip('vertical')
+            if 'gt_bboxes_3d' in data:
+                data['gt_bboxes_3d'].flip('vertical')
+            if 'gt_masks_bev' in data:
+                data['gt_masks_bev'] = data['gt_masks_bev'][:, ::-1, :].copy()
 
-            if "radar" in data:
-                data["radar"].rotate(-theta)
-                data["radar"].translate(translation)
-                data["radar"].scale(scale)
-
-            gt_boxes = data["gt_bboxes_3d"]
-            rotation = rotation @ gt_boxes.rotate(theta).numpy()
-            gt_boxes.translate(translation)
-            gt_boxes.scale(scale)
-            data["gt_bboxes_3d"] = gt_boxes
-
-            transform[:3, :3] = rotation.T * scale
-            transform[:3, 3] = translation * scale
-
-        data["lidar_aug_matrix"] = transform
+        if 'lidar_aug_matrix' not in data:
+            data['lidar_aug_matrix'] = np.eye(4)
+        data['lidar_aug_matrix'][:3, :] = rotation @ data[
+            'lidar_aug_matrix'][:3, :]
         return data
-    
+
 
 @PIPELINES.register_module()
-class BEVFusionGTDepth:
+class BEVFusionGlobalRotScaleTrans(GlobalRotScaleTrans):
+    """Compared with `GlobalRotScaleTrans`, the augmentation order in this
+    class is rotation, translation and scaling (RTS)."""
+
+    def transform(self, input_dict: dict) -> dict:
+        """Private function to rotate, scale and translate bounding boxes and
+        points.
+
+        Args:
+            input_dict (dict): Result dict from loading pipeline.
+
+        Returns:
+            dict: Results after scaling, 'points', 'pcd_rotation',
+            'pcd_scale_factor', 'pcd_trans' and `gt_bboxes_3d` are updated
+            in the result dict.
+        """
+        if 'transformation_3d_flow' not in input_dict:
+            input_dict['transformation_3d_flow'] = []
+
+        self._rot_bbox_points(input_dict)
+
+        if 'pcd_scale_factor' not in input_dict:
+            self._random_scale(input_dict)
+        self._trans_bbox_points(input_dict)
+        self._scale_bbox_points(input_dict)
+
+        input_dict['transformation_3d_flow'].extend(['R', 'T', 'S'])
+
+        lidar_augs = np.eye(4)
+        lidar_augs[:3, :3] = input_dict['pcd_rotation'].T * input_dict[
+            'pcd_scale_factor']
+        lidar_augs[:3, 3] = input_dict['pcd_trans'] * \
+            input_dict['pcd_scale_factor']
+
+        if 'lidar_aug_matrix' not in input_dict:
+            input_dict['lidar_aug_matrix'] = np.eye(4)
+        input_dict[
+            'lidar_aug_matrix'] = lidar_augs @ input_dict['lidar_aug_matrix']
+
+        return input_dict
+
+
+@PIPELINES.register_module()
+class BEVFusionGTDepth(object):
     def __init__(self, keyframe_only=False):
         self.keyframe_only = keyframe_only 
 
@@ -232,7 +270,7 @@ class BEVFusionGTDepth:
     
 
 @PIPELINES.register_module()
-class BEVFusionGridMask:
+class BEVFusionGridMask(object):
     def __init__(
         self,
         use_h,
@@ -268,7 +306,7 @@ class BEVFusionGridMask:
     def __call__(self, results):
         if np.random.rand() > self.prob:
             return results
-        imgs = results["img"]
+        imgs = results['img']
         h = imgs[0].shape[0]
         w = imgs[0].shape[1]
         self.d1 = 2

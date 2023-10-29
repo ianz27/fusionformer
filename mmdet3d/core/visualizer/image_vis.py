@@ -74,12 +74,14 @@ def plot_rect3d_on_img(img,
     """
     line_indices = ((0, 1), (0, 3), (0, 4), (1, 2), (1, 5), (3, 2), (3, 7),
                     (4, 5), (4, 7), (2, 6), (5, 6), (6, 7))
+    H, W, C = img.shape
     for i in range(num_rects):
         corners = rect_corners[i].astype(np.int)
         for start, end in line_indices:
-            cv2.line(img, (corners[start, 0], corners[start, 1]),
-                     (corners[end, 0], corners[end, 1]), color, thickness,
-                     cv2.LINE_AA)
+            pt1 = (corners[start, 0], corners[start, 1])
+            pt2 = (corners[end, 0], corners[end, 1])
+            if 0 < pt1[0] < W and 0 < pt1[1] < H and 0 < pt2[0] < W and 0 < pt2[1] < H:
+                cv2.line(img, pt1, pt2, color, thickness, cv2.LINE_AA)
 
     return img.astype(np.uint8)
 

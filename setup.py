@@ -223,6 +223,14 @@ if __name__ == '__main__':
         },
         ext_modules=[
             make_cuda_ext(
+                name='bev_pool_v2_ext',
+                module='mmdet3d.ops.bev_pool_v2',
+                sources=[
+                    'src/bev_pool.cpp',
+                    'src/bev_pool_cuda.cu',
+                ],
+            ),
+            make_cuda_ext(
                 name='sparse_conv_ext',
                 module='mmdet3d.ops.spconv',
                 extra_include_path=[

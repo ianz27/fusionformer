@@ -2,8 +2,6 @@ import torch
 
 from . import bev_pool_ext
 
-__all__ = ["bev_pool"]
-
 
 class QuickCumsum(torch.autograd.Function):
     @staticmethod

@@ -17,6 +17,8 @@ from .voxelnet import VoxelNet
 from .fusionformer import FusionFormer
 from .detr3d import Detr3D
 from .pointformer import PointFormer
+from .bevdet import BEVDet
+from .lssdet import LSSDet
 
 __all__ = [
     'Base3DDetector', 'VoxelNet', 'DynamicVoxelNet', 'MVXTwoStageDetector',
@@ -25,5 +27,7 @@ __all__ = [
     'FCOSMono3D', 'ImVoxelNet', 'GroupFree3DNet',
     'FusionFormer',
     'Detr3D',
-    'PointFormer'
+    'PointFormer',
+    'BEVDet',
+    'LSSDet'
 ]
