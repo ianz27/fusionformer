@@ -1467,9 +1467,7 @@ class PadMultiViewImage(object):
         Returns:
             dict: Updated result dict.
         """
-        print('1 img.shape', results['img'][0].shape)
         self._pad_img(results)
-        print('2 img.shape', results['img'][0].shape)
         return results
 
     def __repr__(self):

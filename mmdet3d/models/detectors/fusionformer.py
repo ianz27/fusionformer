@@ -35,6 +35,8 @@ class FusionFormer(MVXTwoStageDetector):
                  pts_neck=None,
                  fusion_layer=None,
                  pts_bbox_head=None,
+                 aux_head=None,
+                 aux_weight=1.0,
                  img_roi_head=None,
                  img_rpn_head=None,
                  train_cfg=None,
@@ -53,6 +55,12 @@ class FusionFormer(MVXTwoStageDetector):
 
         if fusion_layer is not None:
             self.fusion_layer = builder.build_fusion_layer(fusion_layer)
+
+        if aux_head is not None:
+            aux_head.update(train_cfg=train_cfg)
+            aux_head.update(test_cfg=test_cfg)
+            self.aux_head = builder.build_head(aux_head)
+            self.aux_weight = aux_weight
 
     def extract_img_feat(self, img, img_metas):
         """Extract features of images."""
@@ -144,11 +152,20 @@ class FusionFormer(MVXTwoStageDetector):
         # exit()
 
         # head
+        # TODO: mvl feature
         outs = self.pts_bbox_head(pts_feats[0], img_feats, img_metas=img_metas)
 
         # loss
         loss_inputs = [gt_bboxes_3d, gt_labels_3d, outs]
         losses = self.pts_bbox_head.loss(*loss_inputs)
+
+        if self.aux_head is not None:
+            # TODO: mvl feature
+            aux_outs = self.aux_head(pts_feats[0], img_feats, img_metas=img_metas)
+            aux_loss_inputs = [gt_bboxes_3d, gt_labels_3d, aux_outs]
+            aux_losses = self.pts_bbox_head.aux_head.loss(*aux_loss_inputs)
+            for k, v in aux_losses.items():
+                losses[f'aux_{k}'] = v * self.aux_weight
 
         return losses
         

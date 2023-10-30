@@ -34,6 +34,8 @@ class PointFormer(MVXTwoStageDetector):
                  pts_neck=None,
                  fusion_layer=None,
                  pts_bbox_head=None,
+                 aux_head=None,
+                 aux_weight=1.0,
                  img_roi_head=None,
                  img_rpn_head=None,
                  train_cfg=None,
@@ -48,6 +50,12 @@ class PointFormer(MVXTwoStageDetector):
                              train_cfg, test_cfg, pretrained, init_cfg)
         if fusion_layer is not None:
             self.fusion_layer = builder.build_fusion_layer(fusion_layer)
+        
+        if aux_head is not None:
+            aux_head.update(train_cfg=train_cfg.pts)
+            aux_head.update(test_cfg=test_cfg.pts)
+            self.aux_head = builder.build_head(aux_head)
+            self.aux_weight = aux_weight
 
     def extract_pts_feat(self, pts, img_feats, img_metas):
         """Extract features of points."""
@@ -115,6 +123,16 @@ class PointFormer(MVXTwoStageDetector):
         # loss
         loss_inputs = [gt_bboxes_3d, gt_labels_3d, outs]
         losses = self.pts_bbox_head.loss(*loss_inputs)
+
+        if self.aux_head is not None:
+            # TODO: mvl feature
+            # aux_feat = F.interpolate(pts_feats[1], pts_feats[0].shape[-2:])
+            # aux_feat = torch.cat((pts_feats[0], aux_feat), dim=1)
+            aux_outs = self.aux_head([pts_feats[0]])
+            aux_loss_inputs = [gt_bboxes_3d, gt_labels_3d, aux_outs]
+            aux_losses = self.aux_head.loss(*aux_loss_inputs)
+            for k, v in aux_losses.items():
+                losses[f'aux_{k}'] = v * self.aux_weight
 
         return losses
         
