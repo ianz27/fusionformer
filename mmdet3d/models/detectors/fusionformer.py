@@ -36,7 +36,7 @@ class FusionFormer(MVXTwoStageDetector):
                  fusion_layer=None,
                  pts_bbox_head=None,
                  aux_head=None,
-                 aux_weight=1.0,
+                 aux_weight=0.5,
                  img_roi_head=None,
                  img_rpn_head=None,
                  train_cfg=None,
@@ -57,8 +57,8 @@ class FusionFormer(MVXTwoStageDetector):
             self.fusion_layer = builder.build_fusion_layer(fusion_layer)
 
         if aux_head is not None:
-            aux_head.update(train_cfg=train_cfg)
-            aux_head.update(test_cfg=test_cfg)
+            aux_head.update(train_cfg=train_cfg.pts)
+            aux_head.update(test_cfg=test_cfg.pts)
             self.aux_head = builder.build_head(aux_head)
             self.aux_weight = aux_weight
 
@@ -140,7 +140,7 @@ class FusionFormer(MVXTwoStageDetector):
         Returns:
             dict: Losses of different branches.
         """
-        # feature extract, ## debug
+        # feature extract
         img_feats, pts_feats = self.extract_feat(points, img, img_metas=img_metas)
         # ## debug
         # # torch.Size([4, 256, 128, 128])

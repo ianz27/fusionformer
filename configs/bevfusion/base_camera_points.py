@@ -56,19 +56,19 @@ model = dict(
     view_transform=dict(
         type='DepthLSSTransform',
         in_channels=256,
-        out_channels=80,
+        out_channels=128,
         image_size=image_size,
         feature_size=[32, 88],
-        xbound=[-54.0, 54.0, 0.3],
-        ybound=[-54.0, 54.0, 0.3],
-        zbound=[-10.0, 10.0, 20.0],
-        dbound=[1.0, 60.0, 0.5],
+        xbound=[-51.2, 51.2, 0.4],
+        ybound=[-51.2, 51.2, 0.4],
+        zbound=[-5.0, 3.0, 8.0],
+        dbound=[1.0, 60.0, 1.0],
         downsample=2),
     # fusion_layer=dict(
     #     type='ConvFuser', in_channels=[80, 256], out_channels=256),
     pts_backbone=dict(
         type='SECOND',
-        in_channels=256,
+        in_channels=128,
         out_channels=[128, 256],
         layer_nums=[5, 5],
         layer_strides=[1, 2],
@@ -254,14 +254,14 @@ test_pipeline = [
         remove_close=True),
     dict(type='LoadMultiViewImageFromFiles', to_float32=True),
     dict(type='PointsRangeFilter', point_cloud_range=point_cloud_range),
-    # dict(type='BEVFusionImageAug3D', 
-    #     final_dim=image_size,
-    #     resize_lim=[0.48, 0.48],
-    #     bot_pct_lim=[0.0, 0.0],
-    #     rot_lim=[0.0, 0.0],
-    #     rand_flip=False,
-    #     is_train=False,
-    #     ),
+    dict(type='BEVFusionImageAug3D', 
+        final_dim=image_size,
+        resize_lim=[0.48, 0.48],
+        bot_pct_lim=[0.0, 0.0],
+        rot_lim=[0.0, 0.0],
+        rand_flip=False,
+        is_train=False,
+        ),
     dict(type='NormalizeMultiviewImage', **img_norm_cfg),
     dict(
         type='MultiScaleFlipAug3D',
@@ -271,7 +271,7 @@ test_pipeline = [
         transforms=[
             dict(type='DefaultFormatBundle3D', class_names=class_names),
             dict(type='Collect3D',
-                keys=['img'],
+                keys=['points', 'img'],
                 meta_keys=['filename', 'ori_shape', 'img_shape',
                             'lidar2img', 'cam_intrinsic', 'lidar2cam', 'cam2lidar', 'img_aug_matrix',
                             'pad_shape', 'scale_factor', 'flip', 'pcd_horizontal_flip', 'pcd_vertical_flip',
@@ -279,32 +279,12 @@ test_pipeline = [
                             'sample_idx', 'pcd_scale_factor', 'pcd_rotation', 'pts_filename', 'transformation_3d_flow'])
                 ])
 ]
+# construct a pipeline for data and gt loading in show function
+# please keep its loading function consistent with test_pipeline (e.g. client)
 eval_pipeline = test_pipeline
-# # construct a pipeline for data and gt loading in show function
-# # please keep its loading function consistent with test_pipeline (e.g. client)
-# eval_pipeline = [
-#     dict(
-#         type='LoadPointsFromFile',
-#         coord_type='LIDAR',
-#         load_dim=5,
-#         use_dim=5,
-#         file_client_args=file_client_args),
-#     dict(
-#         type='LoadPointsFromMultiSweeps',
-#         sweeps_num=9,
-#         use_dim=[0, 1, 2, 3, 4],
-#         file_client_args=file_client_args,
-#         pad_empty_sweeps=True,
-#         remove_close=True),
-#     dict(
-#         type='DefaultFormatBundle3D',
-#         class_names=class_names,
-#         with_label=False),
-#     dict(type='Collect3D', keys=['points'])
-# ]
 
 data = dict(
-    samples_per_gpu=4,
+    samples_per_gpu=2,
     workers_per_gpu=4,
     train=dict(
         type=dataset_type,

@@ -1,15 +1,29 @@
 # 
-
 find_unused_parameters = True
 
-# If point cloud range is changed, the models should also change their point
-# cloud range accordingly
-point_cloud_range = [-51.2, -51.2, -5.0, 51.2, 51.2, 3.0]
 # For nuScenes we usually do 10-class detection
 class_names = [
     'car', 'truck', 'construction_vehicle', 'bus', 'trailer', 'barrier',
     'motorcycle', 'bicycle', 'pedestrian', 'traffic_cone'
 ]
+
+# 0.1
+point_cloud_range = [-51.2, -51.2, -5.0, 51.2, 51.2, 3.0]
+voxel_size = [0.1, 0.1, 0.2]
+sparse_shape = [41, 1024, 1024]
+grid_size = [1024, 1024, 40]
+out_size_factor = 8
+
+# # 0.075
+# point_cloud_range = [-54, -54, -5.0, 54, 54, 3.0]
+# voxel_size = [0.075, 0.075, 0.2]
+# sparse_shape = [41, 1440, 1440]
+# grid_size = [1440, 1440, 40]
+# out_size_factor = 8
+
+transformer_num_layers = 6
+num_query = 900
+bbox_coder_max_num = 500
 
 _dim_ = 256
 _pos_dim_ = _dim_//2
@@ -17,9 +31,36 @@ _ffn_dim_ = _dim_*2
 _num_levels_ = 1
 bev_h_ = 128
 bev_w_ = 128
-transformer_num_layers = 3
 
-voxel_size = [0.1, 0.1, 0.2]
+center_head = dict(
+    type='CenterHead',
+    in_channels=256,  # TODO: sum([256, 256])
+    tasks=[
+        dict(num_class=1, class_names=['car']),
+        dict(num_class=2, class_names=['truck', 'construction_vehicle']),
+        dict(num_class=2, class_names=['bus', 'trailer']),
+        dict(num_class=1, class_names=['barrier']),
+        dict(num_class=2, class_names=['motorcycle', 'bicycle']),
+        dict(num_class=2, class_names=['pedestrian', 'traffic_cone']),
+    ],
+    common_heads=dict(
+        reg=(2, 2), height=(1, 2), dim=(3, 2), rot=(2, 2), vel=(2, 2)),
+    share_conv_channel=64,
+    bbox_coder=dict(
+        type='CenterPointBBoxCoder',
+        pc_range=point_cloud_range[:2],
+        post_center_range=[-61.2, -61.2, -10.0, 61.2, 61.2, 10.0],
+        max_num=bbox_coder_max_num,
+        score_threshold=0.1,
+        out_size_factor=out_size_factor,
+        voxel_size=voxel_size[:2],
+        code_size=9),
+    separate_head=dict(
+        type='SeparateHead', init_bias=-2.19, final_kernel=3),
+    loss_cls=dict(type='GaussianFocalLoss', reduction='mean'),
+    loss_bbox=dict(type='L1Loss', reduction='mean', loss_weight=0.25),
+    norm_bbox=True)
+
 model = dict(
     type='PointFormer',
     pts_voxel_layer=dict(
@@ -29,7 +70,7 @@ model = dict(
     pts_middle_encoder=dict(
         type='SparseEncoder',
         in_channels=5,
-        sparse_shape=[41, 1024, 1024],
+        sparse_shape=sparse_shape,
         output_channels=128,
         order=('conv', 'norm', 'act'),
         encoder_channels=((16, 16, 32), (32, 32, 64), (64, 64, 128), (128, 128)),
@@ -54,11 +95,13 @@ model = dict(
         num_outs=4,
         relu_before_extra_convs=True,
         ),
+    aux_weight=0.5,
+    aux_head=center_head, # aux head
     pts_bbox_head=dict(
         type='PointFormerHead',
         bev_h=bev_h_,
         bev_w=bev_w_,
-        num_query=900,
+        num_query=num_query,
         num_classes=10,
         in_channels=_dim_,
         sync_cls_avg_factor=True,
@@ -96,15 +139,14 @@ model = dict(
             type='NMSFreeCoder',
             post_center_range=[-61.2, -61.2, -10.0, 61.2, 61.2, 10.0],
             pc_range=point_cloud_range,
-            max_num=300,
+            max_num=bbox_coder_max_num,
             voxel_size=voxel_size,
             num_classes=10),
         positional_encoding=dict(
-            type='LearnedPositionalEncoding',
+            type='SinePositionalEncoding',
             num_feats=_pos_dim_,
-            row_num_embed=bev_h_,
-            col_num_embed=bev_w_,
-            ),
+            normalize=True,
+            offset=-0.5),
         loss_cls=dict(
             type='FocalLoss',
             use_sigmoid=True,
@@ -117,9 +159,9 @@ model = dict(
     train_cfg=dict(
         pts=dict(
             point_cloud_range=point_cloud_range,
-            grid_size=[1024, 1024, 40],
+            grid_size=grid_size,
             voxel_size=voxel_size,
-            out_size_factor=8,
+            out_size_factor=out_size_factor,
             dense_reg=1,
             gaussian_overlap=0.1,
             max_objs=500,
@@ -138,10 +180,10 @@ model = dict(
             max_per_img=500,
             max_pool_nms=False,
             min_radius=[4, 12, 10, 1, 0.85, 0.175],
-            score_threshold=0.1,
+            score_threshold=0.1,  #
             out_size_factor=8,
             voxel_size=voxel_size[:2],
-            nms_type='rotate',
+            nms_type='circle',
             pre_max_size=1000,
             post_max_size=83,
             nms_thr=0.2)))
@@ -289,16 +331,18 @@ data = dict(
     samples_per_gpu=4,
     workers_per_gpu=4,
     train=dict(
-        type=dataset_type,
-        data_root=data_root,
-        ann_file=data_root + 'nuscenes_infos_train.pkl',
-        pipeline=train_pipeline,
-        classes=class_names,
-        modality=input_modality,
-        test_mode=False,
-        # we use box_type_3d='LiDAR' in kitti and nuscenes dataset
-        # and box_type_3d='Depth' in sunrgbd and scannet dataset.
-        box_type_3d='LiDAR'),
+        type='CBGSDataset',
+        dataset=dict(
+            type=dataset_type,
+            data_root=data_root,
+            ann_file=data_root + 'nuscenes_infos_train.pkl',
+            pipeline=train_pipeline,
+            classes=class_names,
+            modality=input_modality,
+            test_mode=False,
+            # we use box_type_3d='LiDAR' in kitti and nuscenes dataset
+            # and box_type_3d='Depth' in sunrgbd and scannet dataset.
+            box_type_3d='LiDAR')),
     val=dict(
         type=dataset_type,
         data_root=data_root,
@@ -320,13 +364,12 @@ data = dict(
 
 evaluation = dict(interval=1, pipeline=eval_pipeline)
 
-# For nuScenes dataset, we usually evaluate the model at the end of training.
-# Since the models are trained by 24 epochs by default, we set evaluation
-# interval to be 20. Please change the interval accordingly if you do not
-# use a default schedule.
 # optimizer
 # This schedule is mainly used by models on nuScenes dataset
-optimizer = dict(type='AdamW', lr=1e-4, weight_decay=0.01)
+optimizer = dict(
+    type='AdamW',
+    lr=5e-5,  # 1e-4
+    weight_decay=0.01)
 # max_norm=10 is better for SECOND
 optimizer_config = dict(grad_clip=dict(max_norm=35, norm_type=2))
 lr_config = dict(
@@ -341,19 +384,16 @@ momentum_config = dict(
     cyclic_times=1,
     step_ratio_up=0.4,
 )
-
 # runtime settings
 runner = dict(type='EpochBasedRunner', max_epochs=20)
 
 checkpoint_config = dict(interval=1)
-# yapf:disable push
-# By default we use textlogger hook and tensorboard
-# For more loggers see
-# https://mmcv.readthedocs.io/en/latest/api.html#mmcv.runner.LoggerHook
+
 log_config = dict(
     interval=50,
     hooks=[
         dict(type='TextLoggerHook'),
+        dict(type="WandbLoggerHook")
     ])
 # yapf:enable
 dist_params = dict(backend='nccl')

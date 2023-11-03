@@ -5,7 +5,9 @@ from .second_fpn import SECONDFPN
 from .lss_fpn import FPN_LSS
 from .fpn_bevdet import CustomFPN
 from .depth_lss import LSSTransform, DepthLSSTransform
+from .fusers import ConvFuser
 
 __all__ = ['FPN', 'SECONDFPN', 'OutdoorImVoxelNeck',
            'FPN_LSS', 'CustomFPN',
-           'LSSTransform', 'DepthLSSTransform']
+           'LSSTransform', 'DepthLSSTransform',
+           'ConvFuser']

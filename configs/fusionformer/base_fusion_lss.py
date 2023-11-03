@@ -13,20 +13,49 @@ class_names = [
 # cloud range accordingly
 point_cloud_range = [-51.2, -51.2, -5.0, 51.2, 51.2, 3.0]
 voxel_size = [0.1, 0.1, 0.2]
-grid_size = [1024, 1024, 40]
-out_size_factor = 8
+image_size = [256, 704]
+img_norm_cfg = dict(mean=[123.675, 116.28, 103.53], std=[58.395, 57.12, 57.375], to_rgb=True)
 
 _dim_ = 256
 _pos_dim_ = _dim_//2
 _ffn_dim_ = _dim_*2
 _num_levels_ = 1
-bev_h_ = 128
-bev_w_ = 128
+bev_h_ = 200
+bev_w_ = 200
 transformer_num_layers = 6
 num_query = 900
 
+center_head = dict(
+    type='CenterHead',
+    in_channels=256,  # sum([256, 256])
+    tasks=[
+        dict(num_class=1, class_names=['car']),
+        dict(num_class=2, class_names=['truck', 'construction_vehicle']),
+        dict(num_class=2, class_names=['bus', 'trailer']),
+        dict(num_class=1, class_names=['barrier']),
+        dict(num_class=2, class_names=['motorcycle', 'bicycle']),
+        dict(num_class=2, class_names=['pedestrian', 'traffic_cone']),
+    ],
+    common_heads=dict(
+        reg=(2, 2), height=(1, 2), dim=(3, 2), rot=(2, 2), vel=(2, 2)),
+    share_conv_channel=64,
+    bbox_coder=dict(
+        type='CenterPointBBoxCoder',
+        pc_range=point_cloud_range[:2],
+        post_center_range=[-61.2, -61.2, -10.0, 61.2, 61.2, 10.0],
+        max_num=500,
+        score_threshold=0.1,
+        out_size_factor=8,
+        voxel_size=voxel_size[:2],
+        code_size=9),
+    separate_head=dict(
+        type='SeparateHead', init_bias=-2.19, final_kernel=3),
+    loss_cls=dict(type='GaussianFocalLoss', reduction='mean'),
+    loss_bbox=dict(type='L1Loss', reduction='mean', loss_weight=0.25),
+    norm_bbox=True)
+
 model = dict(
-    type='FusionFormer',
+    type='BEVFusionFormer',
     # camera
     use_grid_mask=True,
     img_backbone=dict(
@@ -52,6 +81,17 @@ model = dict(
         num_outs=4,
         norm_cfg=dict(type='BN2d'),
         relu_before_extra_convs=True),
+    view_transform=dict(
+        type='DepthLSSTransform',
+        in_channels=256,
+        out_channels=128,
+        image_size=image_size,
+        feature_size=[32, 88],
+        xbound=[-51.2, 51.2, 0.4],
+        ybound=[-51.2, 51.2, 0.4],
+        zbound=[-5.0, 3.0, 8.0],
+        dbound=[1.0, 60.0, 1.0],
+        downsample=2),
     # lidar
     pts_voxel_layer=dict(
         point_cloud_range=point_cloud_range,
@@ -66,6 +106,8 @@ model = dict(
         encoder_channels=((16, 16, 32), (32, 32, 64), (64, 64, 128), (128, 128)),
         encoder_paddings=((0, 0, 1), (0, 0, 1), (0, 0, [0, 1, 1]), (0, 0)),
         block_type='basicblock'),
+    fusion_layer=dict(
+        type='ConvFuser', in_channels=[128, 256], out_channels=256),
     pts_backbone=dict(
         type='SECOND',
         in_channels=256,
@@ -85,6 +127,8 @@ model = dict(
         num_outs=4,
         relu_before_extra_convs=True,
         ),
+    aux_weight=0.5,
+    aux_head = center_head, # aux head
     pts_bbox_head=dict(
         type='FusionFormerHead',
         num_query=num_query,
@@ -149,9 +193,9 @@ model = dict(
     train_cfg=dict(
         pts=dict(
             point_cloud_range=point_cloud_range,
-            grid_size=grid_size,
+            grid_size=[1024, 1024, 40],
             voxel_size=voxel_size,
-            out_size_factor=out_size_factor,
+            out_size_factor=8,
             dense_reg=1,
             gaussian_overlap=0.1,
             max_objs=500,
@@ -171,7 +215,7 @@ model = dict(
             max_pool_nms=False,
             min_radius=[4, 12, 10, 1, 0.85, 0.175],
             score_threshold=0.1,
-            out_size_factor=out_size_factor,
+            out_size_factor=8,
             voxel_size=voxel_size[:2],
             nms_type='rotate',
             pre_max_size=1000,
@@ -245,28 +289,35 @@ train_pipeline = [
     dict(type='LoadAnnotations3D', with_bbox_3d=True, with_label_3d=True),
     dict(type='ObjectSample', db_sampler=db_sampler),
     dict(
-        type='GlobalRotScaleTrans',
-        rot_range=[-0.3925, 0.3925],
-        scale_ratio_range=[0.95, 1.05],
-        translation_std=[0, 0, 0]),
+        type='BEVFusionImageAug3D',
+        final_dim=[256, 704],
+        resize_lim=[0.38, 0.55],
+        bot_pct_lim=[0.0, 0.0],
+        rot_lim=[-5.4, 5.4],
+        rand_flip=True,
+        is_train=True),
     dict(
-        type='RandomFlip3D',
-        sync_2d=False,
-        flip_ratio_bev_horizontal=0.5,
-        flip_ratio_bev_vertical=0.5),
+        type='BEVFusionGlobalRotScaleTrans',
+        scale_ratio_range=[0.9, 1.1],
+        rot_range=[-0.78539816, 0.78539816],
+        translation_std=0.5),
+    dict(type='BEVFusionRandomFlip3D'),
     dict(type='PointsRangeFilter', point_cloud_range=point_cloud_range),
     dict(type='ObjectRangeFilter', point_cloud_range=point_cloud_range),
     dict(type='ObjectNameFilter', classes=class_names),
     dict(type='NormalizeMultiviewImage', **img_norm_cfg),
-    dict(type='PadMultiViewImage', size_divisor=32),
+    # dict(type='PadMultiViewImage', size_divisor=32),
     dict(type='PointShuffle'),
     dict(type='DefaultFormatBundle3D', class_names=class_names),
-    dict(type='Collect3D', keys=['points', 'img', 'gt_bboxes_3d', 'gt_labels_3d'])
+    dict(type='Collect3D',
+         keys=['points', 'img', 'gt_bboxes_3d', 'gt_labels_3d'],
+         meta_keys=['filename', 'ori_shape', 'img_shape',
+                    'lidar2img', 'cam_intrinsic', 'lidar2cam', 'cam2lidar', 'img_aug_matrix', 'lidar_aug_matrix',
+                    'pad_shape', 'scale_factor', 'flip', 'pcd_horizontal_flip', 'pcd_vertical_flip',
+                    'box_mode_3d', 'box_type_3d', 'img_norm_cfg', 'pcd_trans',
+                    'sample_idx', 'pcd_scale_factor', 'pcd_rotation', 'pts_filename', 'transformation_3d_flow'])
 ]
 test_pipeline = [
-    dict(type='LoadMultiViewImageFromFiles', to_float32=True),
-    dict(type='NormalizeMultiviewImage', **img_norm_cfg),
-    dict(type='PadMultiViewImage', size_divisor=32),
     dict(
         type='LoadPointsFromFile',
         coord_type='LIDAR',
@@ -280,32 +331,37 @@ test_pipeline = [
         file_client_args=file_client_args,
         pad_empty_sweeps=True,
         remove_close=True),
+    dict(type='LoadMultiViewImageFromFiles', to_float32=True),
+    dict(type='BEVFusionImageAug3D', 
+        final_dim=image_size,
+        resize_lim=[0.48, 0.48],
+        bot_pct_lim=[0.0, 0.0],
+        rot_lim=[0.0, 0.0],
+        rand_flip=False,
+        is_train=False,
+        ),
+    dict(type='NormalizeMultiviewImage', **img_norm_cfg),
     dict(
         type='MultiScaleFlipAug3D',
-        img_scale=(1333, 800),
+        img_scale=(1600, 900),
         pts_scale_ratio=1,
         flip=False,
         transforms=[
-            dict(
-                type='GlobalRotScaleTrans',
-                rot_range=[0, 0],
-                scale_ratio_range=[1., 1.],
-                translation_std=[0, 0, 0]),
-            dict(type='RandomFlip3D'),
-            dict(
-                type='PointsRangeFilter', point_cloud_range=point_cloud_range),
-            dict(
-                type='DefaultFormatBundle3D',
-                class_names=class_names,
-                with_label=False),
-            dict(type='Collect3D', keys=['points', 'img'])
-        ])
+            dict(type='DefaultFormatBundle3D', class_names=class_names),
+            dict(type='Collect3D',
+                keys=['points', 'img'],
+                meta_keys=['filename', 'ori_shape', 'img_shape',
+                            'lidar2img', 'cam_intrinsic', 'lidar2cam', 'cam2lidar', 'img_aug_matrix', 'lidar_aug_matrix',
+                            'pad_shape', 'scale_factor', 'flip', 'pcd_horizontal_flip', 'pcd_vertical_flip',
+                            'box_mode_3d', 'box_type_3d', 'img_norm_cfg', 'pcd_trans',
+                            'sample_idx', 'pcd_scale_factor', 'pcd_rotation', 'pts_filename', 'transformation_3d_flow'])
+                ])
 ]
 eval_pipeline = test_pipeline
 
 data = dict(
-    samples_per_gpu=1,
-    workers_per_gpu=2,
+    samples_per_gpu=2,
+    workers_per_gpu=4,
     train=dict(
         type=dataset_type,
         data_root=data_root,
@@ -350,11 +406,12 @@ optimizer = dict(
     lr=1e-4,
     paramwise_cfg=dict(
         custom_keys={
-            'img_backbone': dict(lr_mult=0.1),
-            'img_neck': dict(lr_mult=0.1),
-            'pts_middle_encoder': dict(lr_mult=0.1),
-            'pts_backbone': dict(lr_mult=0.1),
-            'pts_neck': dict(lr_mult=0.1),
+            'img_backbone': dict(lr_mult=1.0),
+            # 'img_backbone': dict(lr_mult=0.1),
+            # 'img_neck': dict(lr_mult=0.1),
+            # 'pts_middle_encoder': dict(lr_mult=0.1),
+            # 'pts_backbone': dict(lr_mult=0.1),
+            # 'pts_neck': dict(lr_mult=0.1),
         }),
     weight_decay=0.01)
 optimizer_config = dict(grad_clip=dict(max_norm=35, norm_type=2))
@@ -367,7 +424,7 @@ lr_config = dict(
     min_lr_ratio=1e-3)
 
 # runtime settings
-runner = dict(type='EpochBasedRunner', max_epochs=12)
+runner = dict(type='EpochBasedRunner', max_epochs=24)
 
 checkpoint_config = dict(interval=1)
 # yapf:disable push
@@ -378,13 +435,13 @@ log_config = dict(
     interval=50,
     hooks=[
         dict(type='TextLoggerHook'),
-        # dict(type="WandbLoggerHook")
+        dict(type="WandbLoggerHook")
     ])
 # yapf:enable
 dist_params = dict(backend='nccl')
 log_level = 'INFO'
 work_dir = None
-load_from = None
-# load_from = 'pth/c_detr3d_r50_l_centerpoint.pth'
+# load_from = None
+load_from = 'work_dirs/base_lidar_only_aux/lidar_only_epoch_20.pth'
 resume_from = None
 workflow = [('train', 1)]

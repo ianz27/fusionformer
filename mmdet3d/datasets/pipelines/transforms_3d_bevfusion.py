@@ -116,6 +116,9 @@ class BEVFusionImageAug3D(object):
         data['img'] = new_imgs
         # update the calibration matrices
         data['img_aug_matrix'] = transforms
+        # TODO: check the use of img_shape in sample_feature
+        # update img_shape
+        data['img_shape'] = [new_img.shape for new_img in new_imgs]
         return data
 
 

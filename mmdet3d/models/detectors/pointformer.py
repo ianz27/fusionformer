@@ -35,7 +35,7 @@ class PointFormer(MVXTwoStageDetector):
                  fusion_layer=None,
                  pts_bbox_head=None,
                  aux_head=None,
-                 aux_weight=1.0,
+                 aux_weight=0.5,
                  img_roi_head=None,
                  img_rpn_head=None,
                  train_cfg=None,
@@ -52,8 +52,11 @@ class PointFormer(MVXTwoStageDetector):
             self.fusion_layer = builder.build_fusion_layer(fusion_layer)
         
         if aux_head is not None:
-            aux_head.update(train_cfg=train_cfg.pts)
-            aux_head.update(test_cfg=test_cfg.pts)
+            if train_cfg is not None:
+                aux_head.update(train_cfg=train_cfg.pts)
+                aux_head.update(test_cfg=test_cfg.pts)
+            else:
+                aux_head.update(test_cfg=test_cfg.pts)
             self.aux_head = builder.build_head(aux_head)
             self.aux_weight = aux_weight
 

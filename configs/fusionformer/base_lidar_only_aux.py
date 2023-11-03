@@ -84,6 +84,8 @@ model = dict(
         num_outs=4,
         relu_before_extra_convs=True,
         ),
+    aux_weight=0.5,
+    aux_head=center_head, # aux head
     pts_bbox_head=dict(
         type='PointFormerHead',
         bev_h=bev_h_,
@@ -143,7 +145,6 @@ model = dict(
             loss_weight=2.0),
         loss_bbox=dict(type='L1Loss', loss_weight=0.25),
         loss_iou=dict(type='GIoULoss', loss_weight=0.0)),
-    aux_head = center_head, # aux head
     # model training and testing settings
     train_cfg=dict(
         pts=dict(
