@@ -3,7 +3,7 @@ from .anchor3d_head import Anchor3DHead
 from .anchor_free_mono3d_head import AnchorFreeMono3DHead
 from .base_conv_bbox_head import BaseConvBboxHead
 from .base_mono3d_dense_head import BaseMono3DDenseHead
-from .centerpoint_head import CenterHead
+from .centerpoint_head import CenterHead, CustomCenterHead
 from .fcos_mono3d_head import FCOSMono3DHead
 from .free_anchor3d_head import FreeAnchor3DHead
 from .groupfree3d_head import GroupFree3DHead
@@ -22,5 +22,6 @@ __all__ = [
     'GroupFree3DHead',
     'FusionFormerHead',
     'PointFormerHead',
-    'Detr3DHead'
+    'Detr3DHead',
+    'CustomCenterHead'
 ]

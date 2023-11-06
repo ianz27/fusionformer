@@ -1,6 +1,7 @@
 # 
 from copy import deepcopy
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 from mmcv.runner import force_fp32, auto_fp16
 from mmdet.models import DETECTORS
@@ -31,6 +32,8 @@ class BEVFusionFormer(MVXTwoStageDetector):
                  pts_neck=None,
                  view_transform=None,
                  fusion_layer=None,
+                 bev_conv_in_channels=512,
+                 bev_conv_out_channels=256,
                  pts_bbox_head=None,
                  aux_head=None,
                  aux_weight=0.5,
@@ -64,6 +67,11 @@ class BEVFusionFormer(MVXTwoStageDetector):
                 aux_head.update(test_cfg=test_cfg.pts)
             self.aux_head = builder.build_head(aux_head)
             self.aux_weight = aux_weight
+    
+        self.bev_conv = nn.Sequential(
+            nn.Conv2d(bev_conv_in_channels, bev_conv_out_channels, 3, padding=1, bias=False),
+            nn.BatchNorm2d(bev_conv_out_channels),
+            nn.ReLU(True),)
 
     def extract_img_feat(self, img, img_metas):
         """Extract features of images."""
@@ -196,32 +204,19 @@ class BEVFusionFormer(MVXTwoStageDetector):
             dict: Losses of different branches.
         """
         # feature extract
-        bev_feats, img_feats= self.extract_feat(points, img, img_metas=img_metas)
-        # ## debug
-        # # torch.Size([4, 256, 128, 128])
-        # # torch.Size([4, 256, 64, 64])
-        # # torch.Size([4, 256, 32, 32])
-        # # torch.Size([4, 256, 16, 16])
-        # for pts_feat in pts_feats:
-        #     print(pts_feat.shape)
-        # exit()
+        bev_feats_list, img_feats= self.extract_feat(points, img, img_metas=img_metas)
+        
+        bev_feats = self.bev_conv(bev_feats_list[0])
 
         # head
-        # TODO: use mlv bev_feats
-        ## debug
-        # for i, meta in enumerate(img_metas):
-        #     print(i, meta.keys())
-        outs = self.pts_bbox_head(bev_feats[0], img_feats, img_metas=img_metas)
+        outs = self.pts_bbox_head(bev_feats, img_feats, img_metas=img_metas)
 
         # loss
         loss_inputs = [gt_bboxes_3d, gt_labels_3d, outs]
         losses = self.pts_bbox_head.loss(*loss_inputs)
 
         if self.aux_head is not None:
-            # TODO: mvl feature
-            # aux_feat = F.interpolate(pts_feats[1], pts_feats[0].shape[-2:])
-            # aux_feat = torch.cat((pts_feats[0], aux_feat), dim=1)
-            aux_outs = self.aux_head([bev_feats[0]])
+            aux_outs = self.aux_head([bev_feats])
             aux_loss_inputs = [gt_bboxes_3d, gt_labels_3d, aux_outs]
             aux_losses = self.aux_head.loss(*aux_loss_inputs)
             for k, v in aux_losses.items():
@@ -232,26 +227,24 @@ class BEVFusionFormer(MVXTwoStageDetector):
     def simple_test(self, points, img_metas, img=None, rescale=False):
         """Test function without augmentaiton."""
         # feature extract
-        bev_feats, img_feats= self.extract_feat(points, img, img_metas=img_metas)
+        bev_feats_list, img_feats= self.extract_feat(points, img, img_metas=img_metas)
+        
+        bev_feats = self.bev_conv(bev_feats_list[0])
+
+        # head
+        outs = self.pts_bbox_head(bev_feats, img_feats, img_metas=img_metas)
+
+        # get bbox
+        _bbox_list = self.pts_bbox_head.get_bboxes(outs, img_metas, rescale=rescale)
+
+        bbox_results = [
+            bbox3d2result(bboxes, scores, labels)
+            for bboxes, scores, labels in _bbox_list
+        ]
 
         bbox_list = [dict() for i in range(len(img_metas))]
-        bbox_pts = self.simple_test_pts_img(bev_feats, img_feats, img_metas, rescale=rescale)
-
-        for result_dict, pts_bbox in zip(bbox_list, bbox_pts):
+        for result_dict, pts_bbox in zip(bbox_list, bbox_results):
             result_dict['pts_bbox'] = pts_bbox
 
         return bbox_list
 
-    def simple_test_pts_img(self, bev_feats, img_feats, img_metas, rescale=False):
-        """Test function of point cloud branch."""
-        # head
-        outs = self.pts_bbox_head(bev_feats[0], img_feats, img_metas=img_metas)
-
-        bbox_list = self.pts_bbox_head.get_bboxes(outs, img_metas, rescale=rescale)
-
-        bbox_results = [
-            bbox3d2result(bboxes, scores, labels)
-            for bboxes, scores, labels in bbox_list
-        ]
-
-        return bbox_results

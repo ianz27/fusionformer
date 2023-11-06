@@ -4,6 +4,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from mmcv.cnn import ConvModule, build_conv_layer, kaiming_init
 from mmcv.cnn import xavier_init, constant_init
 from mmcv.cnn import Linear, bias_init_with_prob
 from mmcv.runner import force_fp32
@@ -55,6 +56,35 @@ class FusionFormerHead(DETRHead):
             *args, transformer=transformer, **kwargs)
         self.code_weights = nn.Parameter(torch.tensor(
             self.code_weights, requires_grad=False), requires_grad=False)
+        
+        self.query_init = kwargs['query_init']
+        if self.query_init:
+            # hard coding
+            self.nms_kernel_size = 3
+            self.num_proposals = self.num_query
+            bias = 'auto'
+            in_channels = kwargs['in_channels']
+            hidden_channel = kwargs['hidden_channel']
+            num_classes = kwargs['num_classes']
+            layers = []
+            layers.append(ConvModule(
+                in_channels,
+                hidden_channel,
+                kernel_size=3,
+                padding=1,
+                bias=bias,
+                conv_cfg=dict(type='Conv2d'),
+                norm_cfg=dict(type='BN2d'),
+            ))
+            layers.append(build_conv_layer(
+                dict(type='Conv2d'),
+                hidden_channel,
+                num_classes,
+                kernel_size=3,
+                padding=1,
+                bias=bias,
+            ))
+            self.heatmap_head = nn.Sequential(*layers)
 
     def _init_layers(self):
         """Initialize classification branch and regression branch of head."""
@@ -104,7 +134,63 @@ class FusionFormerHead(DETRHead):
                 nn.init.constant_(m[-1].bias, bias_init)
         xavier_init(self.reference_points, distribution='uniform', bias=0.)
 
-    def forward(self, pts_feats, mlvl_feats, query_embeds=None, reference_points=None, img_metas=None):
+    def query_init_by_heatmap(self, feat):
+        batch_size = feat.shape[0]
+        feat_flatten = feat.view(batch_size, feat.shape[1], -1)  # [BS, C, H*W]
+        # bev_pos = self.bev_pos.repeat(batch_size, 1, 1).to(lidar_feat.device)
+        dense_heatmap = self.heatmap_head(feat)
+        dense_heatmap_img = None
+        heatmap = dense_heatmap.detach().sigmoid()
+        padding = self.nms_kernel_size // 2
+        local_max = torch.zeros_like(heatmap)
+        # equals to nms radius = voxel_size * out_size_factor * kenel_size
+        local_max_inner = F.max_pool2d(
+            heatmap, kernel_size=self.nms_kernel_size, stride=1, padding=0
+        )
+        local_max[:, :, padding:(-padding), padding:(-padding)] = local_max_inner
+        ## for Pedestrian & Traffic_cone in nuScenes
+        local_max[
+            :,
+            8,
+        ] = F.max_pool2d(heatmap[:, 8], kernel_size=1, stride=1, padding=0)
+        local_max[
+            :,
+            9,
+        ] = F.max_pool2d(heatmap[:, 9], kernel_size=1, stride=1, padding=0)
+        heatmap = heatmap * (heatmap == local_max)
+        heatmap = heatmap.view(batch_size, heatmap.shape[1], -1)
+
+        # top #num_proposals among all classes
+        top_proposals = heatmap.view(batch_size, -1).argsort(dim=-1, descending=True)[
+            ..., : self.num_proposals
+        ]
+        top_proposals_class = top_proposals // heatmap.shape[-1]
+        top_proposals_index = top_proposals % heatmap.shape[-1]
+        query_feat = feat_flatten.gather(
+            index=top_proposals_index[:, None, :].expand(
+                -1, feat_flatten.shape[1], -1
+            ),
+            dim=-1,
+        )
+        self.query_labels = top_proposals_class
+
+        # # add category embedding
+        # one_hot = F.one_hot(top_proposals_class, num_classes=self.num_classes).permute(
+        #     0, 2, 1
+        # )
+        # query_cat_encoding = self.class_encoding(one_hot.float())
+        # query_feat += query_cat_encoding
+
+        # query_pos = bev_pos.gather(
+        #     index=top_proposals_index[:, None, :]
+        #     .permute(0, 2, 1)
+        #     .expand(-1, -1, bev_pos.shape[-1]),
+        #     dim=1,
+        # )
+
+        return query_feat
+
+    def forward(self, bev_feats, mlvl_feats, query_embeds=None, reference_points=None, img_metas=None, mode='det'):
         """Forward function.
         Args:
             mlvl_feats (tuple[Tensor]): Features from the upstream
@@ -118,12 +204,21 @@ class FusionFormerHead(DETRHead):
                 head with normalized coordinate format (cx, cy, w, l, cz, h, theta, vx, vy). \
                 Shape [nb_dec, bs, num_query, 9].
         """
+        assert mode in ['det', 'track']
+
         bs = mlvl_feats[0].size(0)
+
         if query_embeds is None:
             query_embeds = self.query_embedding.weight
         query_pos, query = torch.split(query_embeds, self.embed_dims , dim=1)
         query_pos = query_pos.unsqueeze(0).expand(bs, -1, -1)
         query = query.unsqueeze(0).expand(bs, -1, -1)
+
+        if self.query_init and mode != 'track':
+            query_feat = self.query_init_by_heatmap(bev_feats)
+            query_feat = query_feat.permute(0, 2, 1)
+            query = query + query_feat
+
         if reference_points is None:
             reference_points = self.reference_points(query_pos)
         else:
@@ -131,7 +226,7 @@ class FusionFormerHead(DETRHead):
         reference_points = reference_points.sigmoid()
         
         hs, init_reference, inter_references = self.transformer(
-            pts_feats,
+            bev_feats,
             mlvl_feats,
             query,
             query_pos,
@@ -218,6 +313,7 @@ class FusionFormerHead(DETRHead):
 
         num_bboxes = bbox_pred.size(0)
         # assigner and sampler
+        gt_c = gt_bboxes.shape[-1]
         assign_result = self.assigner.assign(bbox_pred, cls_score, gt_bboxes,
                                              gt_labels, gt_bboxes_ignore)
         sampling_result = self.sampler.sample(assign_result, bbox_pred,
@@ -233,7 +329,7 @@ class FusionFormerHead(DETRHead):
         label_weights = gt_bboxes.new_ones(num_bboxes)
 
         # bbox targets
-        bbox_targets = torch.zeros_like(bbox_pred)[..., :9]
+        bbox_targets = torch.zeros_like(bbox_pred)[..., :gt_c]
         bbox_weights = torch.zeros_like(bbox_pred)
         bbox_weights[pos_inds] = 1.0
 
@@ -462,7 +558,8 @@ class FusionFormerHead(DETRHead):
             preds = preds_dicts[i]
             bboxes = preds['bboxes']
             bboxes[:, 2] = bboxes[:, 2] - bboxes[:, 5] * 0.5
-            bboxes = img_metas[i]['box_type_3d'](bboxes, 9)
+            code_size = bboxes.shape[-1]
+            bboxes = img_metas[i]['box_type_3d'](bboxes, code_size)
             scores = preds['scores']
             labels = preds['labels']
             ret_list.append([bboxes, scores, labels])

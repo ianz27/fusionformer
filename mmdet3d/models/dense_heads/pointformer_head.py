@@ -39,7 +39,7 @@ class PointFormerHead(DETRHead):
                  bev_h=30,
                  bev_w=30,
                  **kwargs):
-
+        
         self.bev_h = bev_h
         self.bev_w = bev_w
         self.fp16_enabled = False
@@ -67,6 +67,14 @@ class PointFormerHead(DETRHead):
             *args, transformer=transformer, **kwargs)
         self.code_weights = nn.Parameter(torch.tensor(
             self.code_weights, requires_grad=False), requires_grad=False)
+    
+        # in_channels = kwargs['in_channels']
+        # out_channels = transformer.embed_dims
+        # self.bev_conv = nn.Sequential(
+        #     nn.Conv2d(in_channels, out_channels, 3, padding=1, bias=False),
+        #     nn.BatchNorm2d(out_channels),
+        #     nn.ReLU(True),
+        #     )
 
     def _init_layers(self):
         """Initialize classification branch and regression branch of head."""
@@ -138,6 +146,7 @@ class PointFormerHead(DETRHead):
         dtype = bev_embed.dtype
         object_query_embeds = self.query_embedding.weight.to(dtype)
 
+        # bev_embed = self.bev_conv(bev_embed)
         B, C, H, W = bev_embed.shape
         bev_embed = bev_embed.permute(2, 3, 0, 1).contiguous().view(H * W, B, C)
 

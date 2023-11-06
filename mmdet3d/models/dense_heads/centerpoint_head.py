@@ -827,3 +827,26 @@ class CenterHead(BaseModule):
 
             predictions_dicts.append(predictions_dict)
         return predictions_dicts
+
+
+@HEADS.register_module()
+class CustomCenterHead(CenterHead):
+
+    def forward_single(self, x):
+        """Forward function for CenterPoint.
+
+        Args:
+            x (torch.Tensor): Input feature map with the shape of
+                [B, 512, 128, 128].
+
+        Returns:
+            list[dict]: Output results for tasks.
+        """
+        ret_dicts = []
+
+        # x = self.shared_conv(x)
+
+        for task in self.task_heads:
+            ret_dicts.append(task(x))
+
+        return ret_dicts
